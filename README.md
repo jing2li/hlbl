@@ -10,17 +10,31 @@ The program runs on GPUs only. Propagators are solved with tmLQCD/QUDA, and
 the contraction uses the GPU kernels of cvc's `hlbl_mII_invert_contract`,
 vendored in `kernels/`. Nothing else is taken from cvc.
 
-## Status
+## Plan and status
 
-| phase | content | state |
+| phase | deliverable | state |
 |---|---|---|
-| 1 | repository, vendored kernels and KQED wrapper | done |
-| 2 | CMake build skeleton | — |
-| 3 | host core: lattice, arrays, gamma matrices, schedule, `--dry-run` | — |
-| 4 | GPU contraction and random-field test | — |
-| 5 | solver interface and single-pair check | — |
-| 6 | driver: propagator cache, HDF5 output, window ranges | — |
-| 7 | validation against cvc, timing runs | — |
+| 1 | repository, vendored kernels, KQED build wrapper | done |
+| 2 | CMake build: KQED_cuda, `hlbl_kernels`, tmLQCD found, `hlbl_hypercube` stub links | done |
+| 3 | host core: `lattice`, `mdarray`, `gamma`, `schedule`; `hlbl_hypercube --dry-run`; tests `test_schedule`, `test_gamma`, `scripts/compare_schedule.sh` | next |
+| 4 | `contract` (dzu/dzsu → γ products → 4-pt kernel sum, persistent device buffers); `test_contract_random` | — |
+| 5 | `solver` (tmLQCD init, gauge read, plaquette check, MG setup solve, point-source solves); `check_pair` | — |
+| 6 | driver: `propagator_cache` (host or device residency), HDF5 output, timing CSV, `--window-range` | — |
+| 7 | validation against cvc, timing runs at 16 and 32 nodes on 128×64³ | — |
+
+The core library is split in two. `hlbl_core` needs only CUDA, MPI, KQED
+and HDF5. `hlbl_solver` adds tmLQCD. Tests that don't solve link only
+`hlbl_core`.
+
+## Validation
+
+| check | pass criterion | state |
+|---|---|---|
+| schedule vs `scripts/hlbl_mII_hypercube_schedule.py` for several h, n, steps | identical pair tables and counts; `--stride 4 --steps 30` gives 466 propagators, 1965 pairs, 3930 kernel sums, peak cache 30 | — |
+| gamma tables | Clifford algebra; γ5 = γ0γ1γ2γ3 in the cvc convention | — |
+| random-field contraction on 1×1×1×1 vs 2×1×1×1 ranks | agreement to rounding; golden value stored | — |
+| free field (identity gauge, 16×8³, CG solver) vs cvc `hlbl_mII_invert_contract` built with `-DDO_CONNECTED=1`, source at origin, y = n·(1,1,1,1) | `check_pair` and the driver's corresponding pair agree to ~1e-10 relative | — |
+| same comparison on cB211a.072.64 configuration 500, production layout | agreement at solver precision | — |
 
 ## The schedule
 
@@ -84,9 +98,30 @@ Build inside the programming environment on Alps:
 
 ```bash
 uenv start --view=default prgenv-gnu/25.06:rc5
+
+S=/capstor/store/cscs/userlab/lp142
+cmake -S . -B build \
+  -DCMAKE_PREFIX_PATH=$S/software/install_dir/clime_pic \
+  -DtmLQCD_DIR=$S/ljingjin/tmlqcd_install/lib64/cmake/tmlqcd \
+  -DQUDA_DIR=$S/ljingjin/quda_install/lib/cmake/QUDA \
+  -Dlemon_DIR=$S/ljingjin/tmlqcd_install/lib/cmake/lemon \
+  -DKQED_SOURCE_DIR=/users/ljingjin/cvc_cmake/cvc/deps/KQED
+cmake --build build -j 16
 ```
 
-The CMake build is added in phase 2.
+Notes:
+
+- **`tmLQCD_DIR`** must point at the *installed* package config
+  (`lib64/cmake/tmlqcd`). A tmLQCD build tree also contains a
+  `tmLQCDConfig.cmake`, but that one lacks the c-lime finder and configure
+  fails.
+- **`KQED_SOURCE_DIR`** names a KQED checkout at revision `deb4d488`. If it is
+  left empty, that revision is cloned into the build tree. Either way the
+  checkout must stay in place, because KQED reads its precomputed tables
+  from `KQED_SOURCE_DIR/PRECOMP` at run time.
+- `CMAKE_BUILD_TYPE` defaults to `Release` and `CMAKE_CUDA_ARCHITECTURES` to
+  `90` (GH200).
+- `-DHLBL_WITH_TMLQCD=OFF` builds everything except the solver interface.
 
 ## Future work
 
