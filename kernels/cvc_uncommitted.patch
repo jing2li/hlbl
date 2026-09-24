@@ -1,0 +1,575 @@
+diff --git a/cuda_lattice.cu b/cuda_lattice.cu
+index 819f3e0..f19e8c8 100644
+--- a/cuda_lattice.cu
++++ b/cuda_lattice.cu
+@@ -131,6 +131,27 @@ __device__ int coord_map_zerohalf(int xi, int Li) {
+   return (xi > Li / 2) ? xi - Li : ( (xi < Li / 2) ? xi : 0 );
+ }
+ 
++/**
++ * Minimum-image difference a - b, for any integer inputs.
++ *
++ * This is NOT coord_map(a) - coord_map(b): that leaves the result outside
++ * (-L/2, L/2] whenever the two components wrapped differently, handing the QED
++ * kernel a separation the periodic lattice cannot realise. Every kernel
++ * argument built as a difference goes through these. _diff follows the
++ * coord_map convention, _zerohalf_diff the coord_map_zerohalf one; pick
++ * whichever the neighbouring kernel arguments already use.
++ */
++__device__ int coord_mod_pos(int a, int Li) {
++  int const r = a % Li;
++  return (r < 0) ? r + Li : r;
++}
++__device__ int coord_map_diff(int a, int b, int Li) {
++  return coord_map(coord_mod_pos(a - b, Li), Li);
++}
++__device__ int coord_map_zerohalf_diff(int a, int b, int Li) {
++  return coord_map_zerohalf(coord_mod_pos(a - b, Li), Li);
++}
++
+ 
+ /**
+  * 4D kernels: operate over CUDA_BLOCK_SIZE^4 spinor elements each.
+@@ -245,18 +266,11 @@ __device__
+ void static KQED_LX(
+     int ikernel, const double xm[4], const double ym[4],
+     const struct QED_kernel_temps kqed_t, double kerv[6][4][4][4]) {
+-#if CUDA_N_QED_KERNEL != 3
++#if CUDA_N_QED_KERNEL != 1
+   #error "Number of QED kernels does not match implementation"
+ #endif
+-  if (ikernel == 0) {
+-    QED_kernel_L0( xm, ym, kqed_t, kerv );
+-  }
+-  else if (ikernel == 1) {
+-    QED_kernel_L3( xm, ym, kqed_t, kerv );
+-  }
+-  else {
+-    QED_Mkernel_L2( 0.4, xm, ym, kqed_t, kerv );
+-  }
++  /* only LLambda0.4; see the note on kernel_n in hlbl_mII_invert_contract.cpp */
++  QED_Mkernel_L2( 0.4, xm, ym, kqed_t, kerv );
+ }
+ 
+ __global__
+@@ -295,11 +309,12 @@ void ker_4pt_contraction(
+     const int yy = coord.y;
+     const int zz = coord.z;
+     int coord_arr[4] = {tt, xx, yy, zz};
+-    int xv[4], xvzh[4];
++    int xv[4], xvzh[4], x_rel[4];
+     #pragma unroll
+     for (int rho = 0; rho < 4; ++rho) {
+       int xrho = coord_arr[rho] + proc_coord_arr[rho] * local_geom_arr[rho] - gsx_arr[rho];
+       xrho = (xrho + global_geom_arr[rho]) % global_geom_arr[rho];
++      x_rel[rho] = xrho;  // kept unmapped: needed for the minimum-image x - y below
+       xv[rho] = coord_map(xrho, global_geom_arr[rho]);
+       xvzh[rho] = coord_map_zerohalf(xrho, global_geom_arr[rho]);
+     }
+@@ -399,11 +414,13 @@ void ker_4pt_contraction(
+     double * const _corr_I_re  = corr_I_re;
+     double * const _corr_II_re = corr_II_re;
+ 
++    /* minimum image, not xm - ym: see coord_map_zerohalf_diff */
++    int const yv_arr[4] = { yv.t, yv.x, yv.y, yv.z };
+     double const xm_mi_ym[4] = {
+-      xm[0] - ym[0],
+-      xm[1] - ym[1],
+-      xm[2] - ym[2],
+-      xm[3] - ym[3] };
++      coord_map_zerohalf_diff(x_rel[0], yv_arr[0], global_geom_arr[0]) * xunit.a,
++      coord_map_zerohalf_diff(x_rel[1], yv_arr[1], global_geom_arr[1]) * xunit.a,
++      coord_map_zerohalf_diff(x_rel[2], yv_arr[2], global_geom_arr[2]) * xunit.a,
++      coord_map_zerohalf_diff(x_rel[3], yv_arr[3], global_geom_arr[3]) * xunit.a };
+ 
+     for (int ikernel = 0; ikernel < CUDA_N_QED_KERNEL; ++ikernel) {
+       // dtmp += (
+@@ -565,8 +582,8 @@ void ker_2p2_pieces(
+ 
+     for (int yi = 0; yi < n_y; yi++) {
+       // For P2: y = (gsy - gsw)
+-      // For P3, P4, P5: y' = (gsw - gsy)
+-      // We define y = (gsy - gsw) and use -y as input for P3, P4, P5.
++      // For P3: y' = (gsw - gsy)
++      // We define y = (gsy - gsw) and use -y as input for P3.
+       int const gsy_arr[4] = { gycoords[yi].t, gycoords[yi].x, gycoords[yi].y, gycoords[yi].z };
+       int const y[4] = {
+         (gsy_arr[0] - gsw_arr[0] + global_geom_arr[0]) % global_geom_arr[0],
+@@ -602,47 +619,17 @@ void ker_2p2_pieces(
+         xv[1] * xunit.a,
+         xv[2] * xunit.a,
+         xv[3] * xunit.a };
+-      double const xm_minus[4] = {
+-        -xv[0] * xunit.a,
+-        -xv[1] * xunit.a,
+-        -xv[2] * xunit.a,
+-        -xv[3] * xunit.a };
+-        
+-      // int const x_mi_y[4] = {
+-      //   (z[0] - y[0] + global_geom_arr[0]) % global_geom_arr[0],
+-      //   (z[1] - y[1] + global_geom_arr[1]) % global_geom_arr[1],
+-      //   (z[2] - y[2] + global_geom_arr[2]) % global_geom_arr[2],
+-      //   (z[3] - y[3] + global_geom_arr[2]) % global_geom_arr[3]
+-      // };
+-      // int xv_mi_yv[4] = {
+-      //   coord_map_zerohalf(x_mi_y[0], global_geom_arr[0]),
+-      //   coord_map_zerohalf(x_mi_y[1], global_geom_arr[1]),
+-      //   coord_map_zerohalf(x_mi_y[2], global_geom_arr[2]),
+-      //   coord_map_zerohalf(x_mi_y[3], global_geom_arr[3])
+-      // };
+-      // double const xm_mi_ym[4] = {
+-      //   xv_mi_yv[0] * xunit.a,
+-      //   xv_mi_yv[1] * xunit.a,
+-      //   xv_mi_yv[2] * xunit.a,
+-      //   xv_mi_yv[3] * xunit.a
+-      // };
++      /* minimum image, not xm - ym: see coord_map_zerohalf_diff */
+       double const xm_mi_ym[4] = {
+-        xm[0] - ym[0],
+-        xm[1] - ym[1],
+-        xm[2] - ym[2],
+-        xm[3] - ym[3] };
+-      double const ym_mi_xm[4] = {
+-        ym[0] - xm[0],
+-        ym[1] - xm[1],
+-        ym[2] - xm[2],
+-        ym[3] - xm[3] };
++        coord_map_zerohalf_diff(z[0], y[0], global_geom_arr[0]) * xunit.a,
++        coord_map_zerohalf_diff(z[1], y[1], global_geom_arr[1]) * xunit.a,
++        coord_map_zerohalf_diff(z[2], y[2], global_geom_arr[2]) * xunit.a,
++        coord_map_zerohalf_diff(z[3], y[3], global_geom_arr[3]) * xunit.a };
+ 
+       for (int ikernel = 0; ikernel < CUDA_N_QED_KERNEL; ++ikernel) {
+         double local_P2_0[4][4][4] = { 0 };
+         double local_P2_1[4][4][4] = { 0 };
+         double local_P3[4][4][4] = { 0 };
+-        double local_P4_0[4][4][4] = { 0 };
+-        double local_P4_1[4][4][4] = { 0 };
+         KQED_LX( ikernel, xm, ym, kqed_t, kerv );
+         for( int k = 0; k < 6; k++ ) {
+           int const rho = idx_comb.comb[k][0];
+@@ -682,22 +669,6 @@ void ker_2p2_pieces(
+             }
+           }
+         }
+-        KQED_LX( ikernel, ym_mi_xm, xm_minus, kqed_t, kerv );
+-        for( int k = 0; k < 6; k++ ) {
+-          int const rho = idx_comb.comb[k][0];
+-          int const sigma = idx_comb.comb[k][1];
+-          for ( int nu = 0; nu < 4; nu++ ) {
+-            local_P4_0[rho][sigma][nu] = 0.0;
+-            for ( int mu = 0; mu < 4; mu++ ) {
+-              for ( int lambda = 0; lambda < 4; lambda++ ) {
+-                local_P4_0[rho][sigma][nu] += kerv[k][nu][lambda][mu] * pimn[mu][lambda];
+-              }
+-            }
+-            local_P4_1[rho][sigma][nu] = local_P4_0[rho][sigma][nu] * (yv[rho]-xv[rho]);
+-            local_P4_1[sigma][rho][nu] = -local_P4_0[rho][sigma][nu] * (yv[sigma]-xv[sigma]);
+-          }
+-        }
+-
+         // reduce (TODO faster reduce algo?)
+         int ind;
+         for (int rho = 0; rho < 4; ++rho) {
+@@ -712,10 +683,6 @@ void ker_2p2_pieces(
+               atomicAdd_system(&P23x[ind], local_P2_1[rho][sigma][nu]);
+               ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*CUDA_N_QED_GEOM + 2)*4 + rho)*4 + sigma)*4 + nu;
+               atomicAdd_system(&P23x[ind], local_P3[rho][sigma][nu]);
+-              /* ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*CUDA_N_QED_GEOM + 3)*4 + rho)*4 + sigma)*4 + nu;
+-              atomicAdd_system(&P23x[ind], local_P4_0[rho][sigma][nu]);
+-              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*CUDA_N_QED_GEOM + 4)*4 + rho)*4 + sigma)*4 + nu;
+-              atomicAdd_system(&P23x[ind], local_P4_1[rho][sigma][nu]); */
+             }
+           }
+         }
+diff --git a/cuda_lattice.h b/cuda_lattice.h
+index 8478906..599d413 100644
+--- a/cuda_lattice.h
++++ b/cuda_lattice.h
+@@ -39,7 +39,8 @@ struct Pair {
+ #define CUDA_BLOCK_SIZE 4
+ #define CUDA_THREAD_DIM_1D 32
+ 
+-#define CUDA_N_QED_KERNEL 3
++/* keep in step with kernel_n in hlbl_mII_invert_contract.cpp / hlbl_kernels */
++#define CUDA_N_QED_KERNEL 1
+ #define CUDA_N_QED_GEOM 3
+ 
+ void cu_spinor_field_eq_gamma_ti_spinor_field(
+diff --git a/hlbl_kernels/kernels.cu b/hlbl_kernels/kernels.cu
+index 9ba23b6..d61e90f 100644
+--- a/hlbl_kernels/kernels.cu
++++ b/hlbl_kernels/kernels.cu
+@@ -11,7 +11,7 @@ typedef struct {
+   double re, im;
+ } complex;
+ 
+-#define kernel_n 3 // L0, L3, M2
++#define kernel_n 1 // LLambda0.4 only; see hlbl_mII_invert_contract.cpp
+ #define kernel_n_geom 3 // P2_0, P2_1, P3
+ 
+ #define check(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+@@ -244,15 +244,53 @@ __device__ inline static void site_map_zerohalf (int xv[4], int const x[4], unsi
+ 
+ __device__ static void KQED_LX(int const ikernel, const double xm[4], const double ym[4],
+     const struct QED_kernel_temps kqed_t, double kerv[6][4][4][4]) {
+-    switch (ikernel) {
++    /* only LLambda0.4; see the note on kernel_n in hlbl_mII_invert_contract.cpp */
++    if (ikernel != 0) {
++        printf("Error: kernel index %d out of range (0-%d)\n", ikernel, kernel_n-1);
++        return;
++    }
++    QED_Mkernel_L2( 0.4, xm, ym, kqed_t, kerv );
++}
++#ifdef HAVE_KQED_V2
++/* The split init/query ("elementwise") KQED API lives in the upstream
++ * src_cuda_v2/ tree, which the vendored deps/KQED does not yet contain -- so
++ * everything that uses it is behind HAVE_KQED_V2. Enable by bumping deps/KQED
++ * to a revision with src_cuda_v2/, adding that directory to the include path
++ * and -DHAVE_KQED_V2. */
++#include "kernels_elementwise.h"
++
++/* Lambda of the M-kernel. Shared with the KQED_LX() fast path above so the two
++ * cannot drift; that one used to carry a bare 0.4 literal. */
++#define KQED_M_LAMBDA 0.4
++
++/* Block size the cooperative *_init_mt entry points are built for: their
++ * thread-role partition is tid [0,32) -> dS, [32,96) -> dT, [96,160) -> dV
++ * (KQED_MT_NTHREADS in src_cuda_v2/backend_mt/mt_common.h). Fewer threads
++ * leaves roles unfilled and silently corrupts the state; more threads sit
++ * idle at the barriers through the whole init, which is the expensive part. */
++#define KQED_MT_BLOCK 160
++
++/* union, not struct: at most one member is live for the lifetime of a block.
++ * As a struct this is ~13.2 kB of shared memory per block (struct STV alone is
++ * 200 doubles, and L3_State holds four of them); as a union it is the largest
++ * member. With kernel_n == 1 only m_state is reachable, but the other two are
++ * kept so re-enabling a kernel needs no change here. */
++union KQED_States {
++    struct L0_State l0_state;
++    struct L3_State l3_state;
++    struct M_State  m_state;
++};
++
++/* Cooperative: MUST be called by every thread of the block, with no enclosing
++ * branch. The *_init_mt entry points contain __syncthreads(), and mt_common.h
++ * requires every thread -- including the ones with no role -- to reach every
++ * barrier. ikernel is block-uniform (blockIdx.y), so the switch is safe. */
++__device__ static void KQED_LX_INIT(int const ikernel, const double xm[4], const double ym[4],
++    const struct QED_kernel_temps kqed_t, union KQED_States *state)
++{
++    switch(ikernel) {
+         case 0:
+-            QED_kernel_L0( xm, ym, kqed_t, kerv );
+-            break;
+-        case 1:
+-            QED_kernel_L3( xm, ym, kqed_t, kerv );
+-            break;
+-        case 2:
+-            QED_Mkernel_L2( 0.4, xm, ym, kqed_t, kerv );
++            QED_Mkernel_L2_init_mt(KQED_M_LAMBDA, xm, ym, kqed_t, &state->m_state);
+             break;
+         default:
+             printf("Error: kernel index %d out of range (0-%d)\n", ikernel, kernel_n-1);
+@@ -260,6 +298,21 @@ __device__ static void KQED_LX(int const ikernel, const double xm[4], const doub
+     }
+ }
+ 
++/* The cheap half: reads what KQED_LX_INIT staged and returns one element of
++ * kerv[rhosig][mu][nu][lambda]. No barriers, safe to call from any subset. */
++__device__ static double KQED_LX_QUERY(int const ikernel, int const rhosig , int const mu ,
++    int const nu , int const lambda, const union KQED_States *state)
++{
++    switch(ikernel) {
++        case 0:
++            return QED_Mkernel_L2_query(rhosig, mu, nu, lambda, &state->m_state);
++        default:
++            printf("Error: kernel index %d out of range (0-%d)\n", ikernel, kernel_n-1);
++            return 0.;
++    }
++}
++#endif /* HAVE_KQED_V2 */
++
+ __global__ void kernel_pi(double* fwd_y, double * Pi, int iflavor, unsigned const VOLUME){
+     __shared__ double u[12 * 24];
+     __shared__ double d[12 * 24];
+@@ -396,6 +449,7 @@ __device__ inline static double blockReduceSum(double val) {
+ 
+     // Final reduction within the first warp
+     val = (threadIdx.x < nwarps) ? shared[lane] : 0;
++    __syncthreads();
+     if (wid == 0) {
+         val = warpReduceSum(val);
+     }
+@@ -841,6 +895,157 @@ unsigned const T_global, unsigned const LX_global, unsigned const LY_global, uns
+ }
+ 
+ 
++#ifdef HAVE_KQED_V2
++/* ------------------------------------------------------------------------
++ * Cooperative (per-block) counterparts of kernel_p20 / kernel_p21 / kernel_p3.
++ *
++ * The three differ only in which pair of vectors the QED kernel is evaluated
++ * at and in the index order of the element that gets contracted with pi, so
++ * the body lives once here, templated on the geometry, and the three named
++ * __global__ entry points below just instantiate it (named rather than a
++ * templated __global__ so they stay readable in ncu output):
++ *
++ *   GEOM 0 (P2_0):  L(xm, ym)          element [k][mu][nu][lambda]
++ *   GEOM 1 (P2_1):  L(ym, xm)          element [k][nu][mu][lambda]
++ *   GEOM 2 (P3):    L(xm-ym, -ym)      element [k][mu][lambda][nu]
++ *
++ * all contracted with pi[mu][lambda] and accumulated into [rho][sigma][nu].
++ *
++ * MUST be launched with blockDim == KQED_MT_BLOCK (160): the *_init_mt thread
++ * roles are tid [0,32) -> dS, [32,96) -> dT, [96,160) -> dV. Grid is
++ * (n_y chunks, kernel_n, volume chunks); gridDim.z is the tuning knob, since
++ * the whole block works on one site at a time. P23 must be zeroed before
++ * launch -- unlike kernel_p20/p21/p3, which assign, these accumulate with
++ * atomics from every z-block.
++ *
++ * Where the originals give each thread its own site and a private 384-double
++ * kerv in local memory (3280 B of stack frame, 177 registers, ~12.5%
++ * occupancy), here the block shares one site: the STV state lives once in
++ * shared memory and the per-thread cost collapses to 32 registers.
++ * ------------------------------------------------------------------------ */
++template <int GEOM>
++__device__ static void kernel_p23_mt_body(
++    double *pi, double *P23, int n_y, const int gsw[4], const int *gycoords,
++    const double xunit[2], QED_kernel_temps kqed_t, unsigned const VOLUME,
++    const int g_proc_coords[4], unsigned const T, unsigned const LX,
++    unsigned const LY, unsigned const LZ, unsigned const T_global,
++    unsigned const LX_global, unsigned const LY_global, unsigned const LZ_global)
++{
++    __shared__ union KQED_States st;
++
++    for ( int yi = blockIdx.x; yi < n_y; yi += gridDim.x ) {
++        // For P2: y = (gsy - gsw); for P3: y' = (gsw - gsy), i.e. -y.
++        int const * gsy = &gycoords[4*yi];
++        int const y[4] = {
++            ( gsy[0] - gsw[0] + static_cast<int>(T_global) ) % static_cast<int>(T_global),
++            ( gsy[1] - gsw[1] + static_cast<int>(LX_global) ) % static_cast<int>(LX_global),
++            ( gsy[2] - gsw[2] + static_cast<int>(LY_global) ) % static_cast<int>(LY_global),
++            ( gsy[3] - gsw[3] + static_cast<int>(LZ_global) ) % static_cast<int>(LZ_global)
++        };
++        int yv[4];
++        site_map_zerohalf ( yv, y, T_global, LX_global, LY_global, LZ_global );
++        double const ym[4]       = { yv[0]*xunit[0],  yv[1]*xunit[0],  yv[2]*xunit[0],  yv[3]*xunit[0] };
++        double const ym_minus[4] = { -ym[0], -ym[1], -ym[2], -ym[3] };
++
++        int const ikernel = blockIdx.y;
++
++        for ( int ix = blockIdx.z; ix < VOLUME; ix += gridDim.z ) {
++            double const * const pix = pi + ix * 16;
++
++            int const x[4] = {
++            (ix / (static_cast<int>(LX) * static_cast<int>(LY) * static_cast<int>(LZ)) - gsw[0] + g_proc_coords[0] * static_cast<int>(T) + static_cast<int>(T_global)) % static_cast<int>(T_global),
++            (ix / (static_cast<int>(LY) * static_cast<int>(LZ)) % static_cast<int>(LX) - gsw[1] + g_proc_coords[1] * static_cast<int>(LX) + static_cast<int>(LX_global)) % static_cast<int>(LX_global),
++            ((ix / static_cast<int>(LZ)) % static_cast<int>(LY) - gsw[2]  + g_proc_coords[2] * static_cast<int>(LY) + static_cast<int>(LY_global)) % static_cast<int>(LY_global),
++            (ix % static_cast<int>(LZ) - gsw[3] + g_proc_coords[3] * static_cast<int>(LZ) + static_cast<int>(LZ_global)) % static_cast<int>(LZ_global)};
++
++            int xv[4];
++            site_map_zerohalf ( xv, x, T_global, LX_global, LY_global, LZ_global );
++            double const xm[4] = { xv[0]*xunit[0], xv[1]*xunit[0], xv[2]*xunit[0], xv[3]*xunit[0] };
++
++            /* GEOM 2 needs x - y as the minimum image, not xm - ym: the plain
++             * difference of two already-mapped vectors leaves a component
++             * outside (-L/2, L/2] whenever the two wrapped differently. Same
++             * treatment as in kernel_p3. */
++            int const x_mi_y[4] = {
++                (x[0] - y[0] + static_cast<int>(T_global))  % static_cast<int>(T_global),
++                (x[1] - y[1] + static_cast<int>(LX_global)) % static_cast<int>(LX_global),
++                (x[2] - y[2] + static_cast<int>(LY_global)) % static_cast<int>(LY_global),
++                (x[3] - y[3] + static_cast<int>(LZ_global)) % static_cast<int>(LZ_global)};
++            int xmyv[4];
++            site_map_zerohalf ( xmyv, x_mi_y, T_global, LX_global, LY_global, LZ_global );
++            double const xm_mi_ym[4] = { xmyv[0]*xunit[0], xmyv[1]*xunit[0], xmyv[2]*xunit[0], xmyv[3]*xunit[0] };
++
++            double const * const arg0 = (GEOM == 0) ? xm : (GEOM == 1) ? ym : xm_mi_ym;
++            double const * const arg1 = (GEOM == 0) ? ym : (GEOM == 1) ? xm : ym_minus;
++
++            /* Two barriers, both required: the first keeps a fast thread from
++             * overwriting `st` while a slow one is still querying the previous
++             * ix, the second publishes this ix's state. Both are outside any
++             * branch, and the loop bounds are thread-uniform, so every thread
++             * reaches every barrier -- which mt_common.h requires. */
++            __syncthreads();
++            KQED_LX_INIT(ikernel, arg0, arg1, kqed_t, &st);   /* every thread */
++            __syncthreads();
++
++            /* 6*4*4*4 = 384 elements over KQED_MT_BLOCK threads: 3 passes, the
++             * last partial (384 = 2*160 + 64). Decomposed so the 16
++             * (mu,lambda) threads sharing a (rhosig,nu) are contiguous in e --
++             * and since 16 divides KQED_MT_BLOCK, contiguous in threadIdx.x
++             * too, hence a 16-lane half-warp we reduce with __shfl_down_sync.
++             * That is 24 global atomics per site instead of 384, and the
++             * shuffle sum IS the mu/lambda contraction the originals do in
++             * their local_p2_0[64]. */
++            for ( int e = threadIdx.x; e < 384; e += blockDim.x ) {
++                int const rhosig = e >> 6;          /* e / 64        */
++                int const nu     = (e >> 4) & 3;    /* (e / 16) % 4  */
++                int const mu     = (e >> 2) & 3;    /* (e / 4)  % 4  */
++                int const lambda =  e       & 3;
++
++                /* index order per geometry, matching kernel_p20/p21/p3 */
++                double v = ( GEOM == 0 ? KQED_LX_QUERY(ikernel, rhosig, mu, nu, lambda, &st)
++                           : GEOM == 1 ? KQED_LX_QUERY(ikernel, rhosig, nu, mu, lambda, &st)
++                                       : KQED_LX_QUERY(ikernel, rhosig, mu, lambda, nu, &st) )
++                         * pix[mu*4 + lambda];
++
++                /* The partial third pass is active for e < 384 i.e.
++                 * threadIdx.x < 64, so warps 0-1 are wholly active and warps
++                 * 2-4 wholly inactive: the mask stays warp-uniform. */
++                #pragma unroll
++                for ( int off = 8; off > 0; off >>= 1 ) {
++                    v += __shfl_down_sync(0xffffffffu, v, off, 16);
++                }
++                if ( (threadIdx.x & 15) == 0 ) {
++                    int const rho   = idx_comb_d[rhosig][0];
++                    int const sigma = idx_comb_d[rhosig][1];
++                    /* layout [geom][yi][ikernel][rho,sigma,nu] */
++                    atomicAdd_system(
++                        &P23[GEOM*n_y*kernel_n*64 + yi*kernel_n*64 + ikernel*64
++                             + rho*16 + sigma*4 + nu],
++                        v);
++                }
++            }
++        }
++    }
++}
++
++#define KQED_MT_ENTRY(NAME, GEOM)                                                     \
++__global__ void NAME(double *pi, double *P23, int n_y, const int gsw[4],              \
++    const int *gycoords, const double xunit[2], QED_kernel_temps kqed_t,              \
++    unsigned const VOLUME, const int g_proc_coords[4], unsigned const T,              \
++    unsigned const LX, unsigned const LY, unsigned const LZ,                          \
++    unsigned const T_global, unsigned const LX_global, unsigned const LY_global,      \
++    unsigned const LZ_global)                                                         \
++{                                                                                     \
++    kernel_p23_mt_body<GEOM>(pi, P23, n_y, gsw, gycoords, xunit, kqed_t, VOLUME,      \
++        g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);     \
++}
++
++KQED_MT_ENTRY(kernel_p20_mt, 0)
++KQED_MT_ENTRY(kernel_p21_mt, 1)
++KQED_MT_ENTRY(kernel_p3_mt,  2)
++
++#endif /* HAVE_KQED_V2 */
++
+ __host__ void compute_2p2_gpu(double *fwd_y, double *P1, double *P23, int iflavor, 
+      int const gsw[4], const int *gycoords, int const n_y, const double xunit[2], 
+      QED_kernel_temps kqed_t,  unsigned const VOLUME, int const g_proc_coords[4], MPI_Comm g_cart_grid,
+@@ -871,6 +1076,10 @@ __host__ void compute_2p2_gpu(double *fwd_y, double *P1, double *P23, int iflavo
+     // Async copies (using streams to overlap transfer if needed, though usually fast)
+     //check(cudaMemcpy(fwd_y_d, fwd_y, size_fwd * sizeof(double), cudaMemcpyHostToDevice));
+     check(cudaMemset(P1_d, 0, size_p1 * sizeof(double)));
++    /* Required by the _mt kernels, which accumulate with atomics from every
++     * z-block instead of assigning the way kernel_p20/p21/p3 do. Harmless for
++     * the assigning path. */
++    check(cudaMemset(P23_d, 0, size_p23 * sizeof(double)));
+     check(cudaMemcpy(gycoords_d, gycoords, sizeof(int) * 4 * n_y, cudaMemcpyHostToDevice));
+ 
+     /* --- 2. COMPUTE PI (Common Dependency) --- */
+@@ -893,9 +1102,20 @@ __host__ void compute_2p2_gpu(double *fwd_y, double *P1, double *P23, int iflavo
+     // --- Stream x3: P23 ---
+     dim3 gridP23(88, kernel_n);
+     dim3 blockP23(256);
++#ifdef HAVE_KQED_V2_P23_MT
++    /* Cooperative P2_0 / P2_1 / P3. blockDim is fixed at KQED_MT_BLOCK by the
++     * _init_mt thread-role partition -- do not change it; tune gridP23mt.z
++     * instead (each block handles one site at a time, so z is what fills the
++     * GPU). P23_d is zeroed above, which these require. */
++    dim3 gridP23mt(8, kernel_n, 64);
++    kernel_p20_mt<<<gridP23mt, KQED_MT_BLOCK, 0, stream_p20>>>(Pi_d, P23_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
++    kernel_p21_mt<<<gridP23mt, KQED_MT_BLOCK, 0, stream_p21>>>(Pi_d, P23_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
++    kernel_p3_mt <<<gridP23mt, KQED_MT_BLOCK, 0, stream_p3 >>>(Pi_d, P23_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
++#else
+     kernel_p20<<<gridP23, blockP23, 0, stream_p20>>>(Pi_d, P23_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+     kernel_p21<<<gridP23, blockP23, 0, stream_p21>>>(Pi_d, P23_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+     kernel_p3<<<gridP23, blockP23, 0, stream_p3>>>(Pi_d,P23_d,n_y,gsw ,gycoords_d,xunit,kqed_t,VOLUME,g_proc_coords,T,LX ,LY,LZ,T_global,LX_global ,LY_global,LZ_global);
++#endif
+     cudaMemcpyAsync(P23, P23_d, size_p23/3 * sizeof(double), cudaMemcpyDeviceToHost, stream_p20);
+     cudaMemcpyAsync(P23 + size_p23/3, P23_d + size_p23/3, size_p23/3 * sizeof(double), cudaMemcpyDeviceToHost, stream_p21);
+     cudaMemcpyAsync(P23 + 2*size_p23/3, P23_d + 2*size_p23/3, size_p23/3 * sizeof(double), cudaMemcpyDeviceToHost, stream_p3);    
+@@ -1018,7 +1238,7 @@ __host__ void record_p23_cuda(double *Pi, int n_y, const int gsw[4], const int *
+     cudaMalloc((void **)&Pi_d, sizeof(double) * 16 * VOLUME);
+     cudaMemcpy(Pi_d, Pi, sizeof(double) * 16 * VOLUME, cudaMemcpyHostToDevice);
+     cudaMalloc((void **)&P23_d, sizeof(double) * n_y * kernel_n * kernel_n_geom * 4 * 4 *4);
+-    cudaMemset(P23_d, 0, n_y * kernel_n * kernel_n_geom * 4 * 4 *4);
++    cudaMemset(P23_d, 0, n_y * kernel_n * kernel_n_geom * 4 * 4 *4 * sizeof(double));
+     int *gycoords_d;
+     cudaMalloc((void **)&gycoords_d, sizeof(int) * 4 * n_y);
+     cudaMemcpy(gycoords_d, gycoords, sizeof(int) * 4 * n_y, cudaMemcpyHostToDevice);
+@@ -1103,7 +1323,7 @@ __global__ void kernel_4pt(const double * fwd_src, const double * fwd_y,
+     // Shared memory for intermediate results. Total size: 23KB < 48KB limit
+     __shared__ double dxu[4][12][24];
+     __shared__ double kerv[3][3][6][4][4][4] KQED_ALIGN;
+-
++    double sum[3] = {0.};
+ 
+     // One lattice point per block
+     for ( unsigned int ix = blockIdx.x; ix < VOLUME; ix+=gridDim.x ){      
+@@ -1182,11 +1402,9 @@ __global__ void kernel_4pt(const double * fwd_src, const double * fwd_y,
+         }
+ 
+         __syncthreads();
+-        
+         int const k = threadIdx.x / 16;
+         int const nu = (threadIdx.x % 16) / 4;
+         int const lambda = threadIdx.x % 4;
+-        double sum[3] = {0.};
+         for (int mu=0; mu<4; mu++) {
+             double g_dxu[12][24];
+             for (int ia=0; ia<12; ia++) {
+@@ -1218,14 +1436,16 @@ __global__ void kernel_4pt(const double * fwd_src, const double * fwd_y,
+                 sum[ikernel] += (kerv[ikernel][0][k][mu][nu][lambda] + kerv[ikernel][1][k][nu][mu][lambda] - kerv[ikernel][2][k][lambda][nu][mu]) * corr_I
+                     + kerv[ikernel][2][k][lambda][nu][mu] * corr_II;
+             }
+-            // if (threadIdx.x==0 && ix==0 && mu==0) {kernel_sum[0] = kerv[0][1][0][0][0][0]; kernel_sum[1] = kerv[1][0][2][2][2][2]; kernel_sum[2]=g_dxu[0][0];}
+-        }
+-        //double const sum_block = blockReduceSum(sum);
+-        for (int i=0; i<3; i++) {
+-            double const sum_block = blockReduceSum(sum[i]);
+-            atomicAdd_system(&kernel_sum[threadIdx.x], sum[threadIdx.x]); 
+-            //if (threadIdx.x == 0) atomicAdd_system(&kernel_sum[i], sum_block);
+         }
++        __syncthreads();
++    }
++
++    // reduce sum across threads
++    for (int i=0; i<kernel_n; i++) {
++        double const sum_block = blockReduceSum(sum[i]);
++        if (threadIdx.x == 0) atomicAdd_system(&kernel_sum[i], sum_block);
++        /* blockReduceSum reuses one static __shared__ buffer: the next call
++         * must not write it while warp 0 is still reading it */
+     }
+ }
+ 
+@@ -1243,22 +1463,19 @@ __host__ void compute_4pt_gpu(
+     cudaMalloc((void **)&g_dxu_d, sizeof(double) * 4*4*12*24);
+     cudaMalloc((void **)&g_dzu_d, sizeof(double) *6*4*12*24);
+     cudaMalloc((void **)&g_dzsu_d, sizeof(double) *6*4*12*24);
+-    cudaMalloc((void **)&kernel_sum_d, sizeof(double) * 3);
++    cudaMalloc((void **)&kernel_sum_d, sizeof(double) * kernel_n);
+     cudaMemcpy(g_dzu_d, g_dzu, sizeof(double)*6*4*12*24, cudaMemcpyHostToDevice);
+     cudaMemcpy(g_dzsu_d, g_dzsu, sizeof(double)*6*4*12*24, cudaMemcpyHostToDevice);
+-    cudaMemset(kernel_sum_d, 0, sizeof(double) * 3);
++    cudaMemset(kernel_sum_d, 0, sizeof(double) * kernel_n);
+ 
+     dim3 gridDim(264);
+     dim3 blockDim(96);
+ 
+-    kernel_4pt<<<gridDim, blockDim>>>(fwd_src, fwd_y, g_dzu_d, g_dzsu_d, gsx, 0, xunit, yv, kernel_sum_d, kqed_t, VOLUME,
++    kernel_4pt<<<gridDim, blockDim>>>(fwd_src, fwd_y, g_dzu_d, g_dzsu_d, gsx, iflavor, xunit, yv, kernel_sum_d, kqed_t, VOLUME,
+     g_proc_coords, g_cart_grid, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+-    cudaError_t err = cudaGetLastError();
+-    if (err != cudaSuccess) {
+-        printf("CUDA Error at launch: %s\n", cudaGetErrorString(err));
+-    }
++
+     cudaDeviceSynchronize();
+-    cudaMemcpy(kernel_sum, kernel_sum_d, sizeof(double) * 3, cudaMemcpyDeviceToHost);
++    cudaMemcpy(kernel_sum, kernel_sum_d, sizeof(double) * kernel_n, cudaMemcpyDeviceToHost);
+     cudaFree(g_dxu_d);
+     cudaFree(g_dzu_d);
+     cudaFree(g_dzsu_d);
