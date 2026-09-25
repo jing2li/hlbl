@@ -17,11 +17,36 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 option(HLBL_WITH_TMLQCD "Build the solver interface (needs tmLQCD and QUDA)" ON)
 
+enable_testing()
+
 find_package(MPI REQUIRED COMPONENTS C CXX)
 find_package(CUDAToolkit REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C)
 
 add_subdirectory(deps/kqed)
+
+# ---------------------------------------------------------------------------
+# hlbl_core: lattice geometry, gamma tables and the hypercube schedule.
+# No CUDA or KQED, only MPI (Lattice's Cartesian communicator), so this
+# builds and its tests run even with -DHLBL_WITH_TMLQCD=OFF and without a
+# GPU.
+# ---------------------------------------------------------------------------
+add_library(hlbl_core STATIC
+  src/gamma.cpp
+  src/schedule.cpp
+  src/geometry.cpp)
+target_include_directories(hlbl_core PUBLIC include)
+target_link_libraries(hlbl_core PUBLIC MPI::MPI_CXX)
+
+function(hlbl_core_test name)
+  add_executable(${name} sanity_check/${name}.cpp)
+  target_link_libraries(${name} PRIVATE hlbl_core)
+  add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+hlbl_core_test(test_schedule)
+hlbl_core_test(test_gamma)
+hlbl_core_test(test_lattice)
 
 # ---------------------------------------------------------------------------
 # Vendored production kernels (see kernels/VENDORED.md)
@@ -50,7 +75,7 @@ endif()
 # ---------------------------------------------------------------------------
 function(hlbl_executable name)
   add_executable(${name} ${ARGN})
-  target_link_libraries(${name} PRIVATE hlbl_kernels)
+  target_link_libraries(${name} PRIVATE hlbl_core hlbl_kernels)
   # the kernels call __device__ functions in KQED_cuda's relocatable device
   # code, so the device link happens in every executable
   set_target_properties(${name} PROPERTIES
@@ -59,3 +84,7 @@ function(hlbl_executable name)
 endfunction()
 
 hlbl_executable(hlbl_hypercube bin/hlbl_hypercube.cpp)
+
+add_test(NAME compare_schedule
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/compare_schedule.sh
+          $<TARGET_FILE:hlbl_hypercube>)

@@ -16,8 +16,8 @@ vendored in `kernels/`. Nothing else is taken from cvc.
 |---|---|---|
 | 1 | repository, vendored kernels, KQED build wrapper | done |
 | 2 | CMake build: KQED_cuda, `hlbl_kernels`, tmLQCD found, `hlbl_hypercube` stub links | done |
-| 3 | host core: `lattice`, `mdarray`, `gamma`, `schedule`; `hlbl_hypercube --dry-run`; tests `test_schedule`, `test_gamma`, `scripts/compare_schedule.sh` | next |
-| 4 | `contract` (dzu/dzsu → γ products → 4-pt kernel sum, persistent device buffers); `test_contract_random` | — |
+| 3 | host core: `lattice`, `mdarray`, `gamma`, `schedule`; `hlbl_hypercube --dry-run`; tests `test_schedule`, `test_gamma`, `test_lattice`, `scripts/compare_schedule.sh` | done |
+| 4 | `contract` (dzu/dzsu → γ products → 4-pt kernel sum, persistent device buffers); `test_contract_random` | next |
 | 5 | `solver` (tmLQCD init, gauge read, plaquette check, MG setup solve, point-source solves); `check_pair` | — |
 | 6 | driver: `propagator_cache` (host or device residency), HDF5 output, timing CSV, `--window-range` | — |
 | 7 | validation against cvc, timing runs at 16 and 32 nodes on 128×64³ | — |
@@ -30,8 +30,8 @@ and HDF5. `hlbl_solver` adds tmLQCD. Tests that don't solve link only
 
 | check | pass criterion | state |
 |---|---|---|
-| schedule vs `scripts/hlbl_mII_hypercube_schedule.py` for several h, n, steps | identical pair tables and counts; `--stride 4 --steps 30` gives 466 propagators, 1965 pairs, 3930 kernel sums, peak cache 30 | — |
-| gamma tables | Clifford algebra; γ5 = γ0γ1γ2γ3 in the cvc convention | — |
+| schedule vs `scripts/hlbl_mII_hypercube_schedule.py` for several h, n, steps | identical pair tables and counts; `--stride 4 --steps 30` gives 466 propagators, 1965 pairs, 3930 kernel sums, peak cache 30 | done, `scripts/compare_schedule.sh` |
+| gamma tables | Clifford algebra; γ5 = γ0γ1γ2γ3 in the cvc convention | done, `test_gamma` (γμ²=γ5²=1, pairwise anticommutation) |
 | random-field contraction on 1×1×1×1 vs 2×1×1×1 ranks | agreement to rounding; golden value stored | — |
 | free field (identity gauge, 16×8³, CG solver) vs cvc `hlbl_mII_invert_contract` built with `-DDO_CONNECTED=1`, source at origin, y = n·(1,1,1,1) | `check_pair` and the driver's corresponding pair agree to ~1e-10 relative | — |
 | same comparison on cB211a.072.64 configuration 500, production layout | agreement at solver precision | — |
@@ -122,6 +122,18 @@ Notes:
 - `CMAKE_BUILD_TYPE` defaults to `Release` and `CMAKE_CUDA_ARCHITECTURES` to
   `90` (GH200).
 - `-DHLBL_WITH_TMLQCD=OFF` builds everything except the solver interface.
+
+### Testing
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+`test_schedule`, `test_gamma` and `test_lattice` are single-rank, GPU-free
+unit tests. `compare_schedule` runs `scripts/compare_schedule.sh`, which
+checks `hlbl_hypercube --dry-run`'s schedule against the Python reference for
+several step directions, strides and step counts by calling the reference's
+own functions -- not by parsing its prose output.
 
 ## Future work
 
