@@ -74,12 +74,17 @@ target_include_directories(hlbl_core PUBLIC include)
 target_link_libraries(hlbl_core PUBLIC hlbl_kernels_obj)
 
 # ---------------------------------------------------------------------------
-# tmLQCD, which brings QUDA, lemon and c-lime
+# hlbl_solver: the tmLQCD/QUDA interface (gauge read, plaquette, point-source
+# solves). Needs tmLQCD, which brings QUDA, lemon and c-lime; nothing here
+# is needed by hlbl_core or the tests that don't solve.
 # ---------------------------------------------------------------------------
 if (HLBL_WITH_TMLQCD)
   # tmLQCDConfig.cmake calls find_dependency() without including this
   include(CMakeFindDependencyMacro)
   find_package(tmLQCD REQUIRED)
+
+  add_library(hlbl_solver STATIC src/solver.cpp)
+  target_link_libraries(hlbl_solver PUBLIC hlbl_core tmlqcd::tmlqcd)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -108,6 +113,17 @@ hlbl_test(test_schedule)
 hlbl_test(test_gamma)
 hlbl_test(test_lattice)
 hlbl_test(test_contract_random)
+
+# check_pair needs a real gauge configuration and a solve that can take
+# minutes to set up, so it is a manual tool (see its own top-of-file
+# comment), not a ctest case.
+if (HLBL_WITH_TMLQCD)
+  add_executable(check_pair sanity_check/check_pair.cpp)
+  target_link_libraries(check_pair PRIVATE hlbl_solver hlbl_kernels_obj)
+  set_target_properties(check_pair PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON)
+endif()
 
 add_test(NAME compare_schedule
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/compare_schedule.sh

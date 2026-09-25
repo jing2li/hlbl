@@ -18,7 +18,7 @@ vendored in `kernels/`. Nothing else is taken from cvc.
 | 2 | CMake build: KQED_cuda, `hlbl_kernels`, tmLQCD found, `hlbl_hypercube` stub links | done |
 | 3 | host core: `lattice`, `mdarray`, `gamma`, `schedule`; `hlbl_hypercube --dry-run`; tests `test_schedule`, `test_gamma`, `test_lattice`, `scripts/compare_schedule.sh` | done |
 | 4 | `contract` (dzu/dzsu → γ products → 4-pt kernel sum, persistent device buffers); `test_contract_random` | done |
-| 5 | `solver` (tmLQCD init, gauge read, plaquette check, MG setup solve, point-source solves); `check_pair` | next |
+| 5 | `solver` (tmLQCD init, gauge read, plaquette check, MG setup solve, point-source solves); `check_pair` | in progress: builds, gauge read verified on the real configuration; first end-to-end `check_pair` result pending |
 | 6 | driver: `propagator_cache` (host or device residency), HDF5 output, timing CSV, `--window-range` | — |
 | 7 | validation against cvc, timing runs at 16 and 32 nodes on 128×64³ | — |
 

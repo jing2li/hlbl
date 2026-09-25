@@ -69,11 +69,19 @@ class DeviceBuffer {
   std::size_t size() const { return size_; }
 
   void copy_from_host(const T* src, std::size_t n) {
-    check_cuda(cudaMemcpy(ptr_, src, n * sizeof(T), cudaMemcpyHostToDevice),
+    copy_from_host(0, src, n);
+  }
+  void copy_from_host(std::size_t offset, const T* src, std::size_t n) {
+    check_cuda(cudaMemcpy(ptr_ + offset, src, n * sizeof(T),
+                           cudaMemcpyHostToDevice),
                "cudaMemcpy H2D");
   }
   void copy_to_host(T* dst, std::size_t n) const {
-    check_cuda(cudaMemcpy(dst, ptr_, n * sizeof(T), cudaMemcpyDeviceToHost),
+    copy_to_host(0, dst, n);
+  }
+  void copy_to_host(std::size_t offset, T* dst, std::size_t n) const {
+    check_cuda(cudaMemcpy(dst, ptr_ + offset, n * sizeof(T),
+                           cudaMemcpyDeviceToHost),
                "cudaMemcpy D2H");
   }
   void zero() {
