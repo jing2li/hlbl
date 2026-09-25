@@ -26,40 +26,52 @@ find_package(HDF5 REQUIRED COMPONENTS C)
 add_subdirectory(deps/kqed)
 
 # ---------------------------------------------------------------------------
-# hlbl_core: lattice geometry, gamma tables and the hypercube schedule.
-# No CUDA or KQED, only MPI (Lattice's Cartesian communicator), so this
-# builds and its tests run even with -DHLBL_WITH_TMLQCD=OFF and without a
-# GPU.
+# Vendored production kernels (see kernels/VENDORED.md), as an OBJECT
+# library rather than a STATIC one.
+#
+# cuda_lattice.cu calls device functions defined in KQED_cuda's own
+# relocatable device code, so at the final executable's device-link step
+# nvlink must see both. nvlink does not reliably extract device code across
+# two cross-referencing STATIC archives -- it silently drops it, leaving
+# __cudaRegisterLinkedBinary_* undefined at the host link, and only once
+# something actually pulls the affected archive member in. An OBJECT
+# library sidesteps this: its .o files are added directly to whichever
+# executable links it, never archived, so nvlink again sees exactly what
+# cvc's own time_hlbl/CMakeLists.txt sees for the same kernels: plain
+# object files plus the one self-contained device archive, KQED_cuda.
+#
+# Must be linked directly by each final executable (see hlbl_executable()),
+# never through an intermediate STATIC library -- that would recreate the
+# same archive-in-archive problem one level up.
+# ---------------------------------------------------------------------------
+add_library(hlbl_kernels_obj OBJECT
+  kernels/cuda_lattice.cu
+  kernels/hlbl_kernels/kernels.cu
+  kernels/kqed_cuda_glue.cu)
+target_include_directories(hlbl_kernels_obj PUBLIC kernels kernels/hlbl_kernels)
+target_link_libraries(hlbl_kernels_obj PUBLIC KQED_cuda MPI::MPI_CXX CUDA::cudart)
+set_target_properties(hlbl_kernels_obj PROPERTIES
+  CUDA_SEPARABLE_COMPILATION ON
+  POSITION_INDEPENDENT_CODE ON)
+
+# ---------------------------------------------------------------------------
+# hlbl_core: lattice geometry, gamma tables, the hypercube schedule, and the
+# connected contraction. contract.cpp calls the vendored kernels but
+# contains no device code of its own, so this stays a plain host archive --
+# see hlbl_kernels_obj above for why it must NOT also embed that OBJECT
+# library.
+#
+# Needs CUDA, MPI, KQED (for cuda_lattice.h/contract.cpp) and HDF5 (once
+# output.cpp is added), but not tmLQCD -- unlike hlbl_solver, none of it
+# needs a gauge field or a real solver.
 # ---------------------------------------------------------------------------
 add_library(hlbl_core STATIC
   src/gamma.cpp
   src/schedule.cpp
-  src/geometry.cpp)
+  src/geometry.cpp
+  src/contract.cpp)
 target_include_directories(hlbl_core PUBLIC include)
-target_link_libraries(hlbl_core PUBLIC MPI::MPI_CXX)
-
-function(hlbl_core_test name)
-  add_executable(${name} sanity_check/${name}.cpp)
-  target_link_libraries(${name} PRIVATE hlbl_core)
-  add_test(NAME ${name} COMMAND ${name})
-endfunction()
-
-hlbl_core_test(test_schedule)
-hlbl_core_test(test_gamma)
-hlbl_core_test(test_lattice)
-
-# ---------------------------------------------------------------------------
-# Vendored production kernels (see kernels/VENDORED.md)
-# ---------------------------------------------------------------------------
-add_library(hlbl_kernels STATIC
-  kernels/cuda_lattice.cu
-  kernels/hlbl_kernels/kernels.cu
-  kernels/kqed_cuda_glue.cu)
-target_include_directories(hlbl_kernels PUBLIC kernels kernels/hlbl_kernels)
-target_link_libraries(hlbl_kernels PUBLIC KQED_cuda MPI::MPI_CXX CUDA::cudart)
-set_target_properties(hlbl_kernels PROPERTIES
-  CUDA_SEPARABLE_COMPILATION ON
-  POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(hlbl_core PUBLIC hlbl_kernels_obj)
 
 # ---------------------------------------------------------------------------
 # tmLQCD, which brings QUDA, lemon and c-lime
@@ -71,19 +83,31 @@ if (HLBL_WITH_TMLQCD)
 endif()
 
 # ---------------------------------------------------------------------------
-# Executables
+# Executables. Every one links hlbl_kernels_obj directly (not only via
+# hlbl_core) so its .o files are added to the link rather than archived --
+# harmless if hlbl_core already pulls it in publicly, but explicit here
+# because that propagation is exactly the property the comment above says
+# not to rely on for a STATIC consumer.
 # ---------------------------------------------------------------------------
 function(hlbl_executable name)
   add_executable(${name} ${ARGN})
-  target_link_libraries(${name} PRIVATE hlbl_core hlbl_kernels)
-  # the kernels call __device__ functions in KQED_cuda's relocatable device
-  # code, so the device link happens in every executable
+  target_link_libraries(${name} PRIVATE hlbl_core hlbl_kernels_obj)
   set_target_properties(${name} PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endfunction()
 
+function(hlbl_test name)
+  hlbl_executable(${name} sanity_check/${name}.cpp)
+  add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
 hlbl_executable(hlbl_hypercube bin/hlbl_hypercube.cpp)
+
+hlbl_test(test_schedule)
+hlbl_test(test_gamma)
+hlbl_test(test_lattice)
+hlbl_test(test_contract_random)
 
 add_test(NAME compare_schedule
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/compare_schedule.sh
