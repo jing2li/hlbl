@@ -10,6 +10,7 @@
 
 #include "hlbl/lattice.hpp"
 #include "hlbl/mdarray.hpp"
+#include "hlbl/provider.hpp"
 #include "hlbl/vec4.hpp"
 
 namespace hlbl {
@@ -58,13 +59,26 @@ class Solver {
   // caller supplies a [2 flavours][12][24 * local volume] device buffer
   // (hlbl::Contractor's fwd_src/fwd_y layout) and calls this once per
   // flavour, offset = flavour * 12 * 24 * local volume (see
-  // sanity_check/check_pair.cpp).
-  void invert_point(const Vec4& gsx, int op_id, DeviceBuffer<double>& dest,
-                     std::size_t offset);
+  // sanity_check/check_pair.cpp). Returns the solver iterations, summed over
+  // the 12 solves.
+  int invert_point(const Vec4& gsx, int op_id, DeviceBuffer<double>& dest,
+                    std::size_t offset);
 
  private:
   std::unique_ptr<Lattice> lattice_;
   int nconf_ = 0;
+};
+
+// The tmLQCD/QUDA solves as a PropagatorProvider: both flavours of a point
+// source, into the [2][12][24 * local volume] block the driver's cache uses.
+class SolverProvider : public PropagatorProvider {
+ public:
+  explicit SolverProvider(Solver& solver) : solver_(solver) {}
+
+  int compute(const Vec4& gsx, DeviceBuffer<double>& dest) override;
+
+ private:
+  Solver& solver_;
 };
 
 }  // namespace hlbl

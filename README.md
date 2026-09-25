@@ -19,7 +19,7 @@ vendored in `kernels/`. Nothing else is taken from cvc.
 | 3 | host core: `lattice`, `mdarray`, `gamma`, `schedule`; `hlbl_hypercube --dry-run`; tests `test_schedule`, `test_gamma`, `test_lattice`, `scripts/compare_schedule.sh` | done |
 | 4 | `contract` (dzu/dzsu → γ products → 4-pt kernel sum, persistent device buffers); `test_contract_random` | done |
 | 5 | `solver` (tmLQCD init, gauge read, plaquette check, MG setup solve, point-source solves); `check_pair` | done: runs end to end on the production configuration (see "Running on Alps") |
-| 6 | driver: `propagator_cache` (host or device residency), HDF5 output, timing CSV, `--window-range` | — |
+| 6 | driver: `provider`, `propagator_cache` (host or device residency), HDF5 output, timing CSV, `--window-range`, `hlbl_hypercube` | done on random fields (`test_driver_random`, `hypercube_random_fields`); the solver path of the binary builds but has not been run on the cluster yet |
 | 7 | validation against cvc, timing runs at 16 and 32 nodes on 128×64³ | — |
 
 The core library is split in two. `hlbl_core` needs only CUDA, MPI, KQED
@@ -38,6 +38,9 @@ and HDF5. `hlbl_solver` adds tmLQCD. Tests that don't solve link only
 | gauge field seen by QUDA, cB211a.072.64 #500, 16 GPUs | QUDA's mean plaquette equals the file's recorded 0.554279822834 | done, 12 digits (`check_pair`, `plaqQuda` order is {mean, spatial, temporal}) |
 | real-propagator `kernel_sum` for the pair (origin, origin + 2·(1,1,1,1)) | finite, reproducible run to run | done, two independent 16-GPU runs: flavour 0 = −4.61833559e-08 / −4.61833559e-08 (1.5e-9 rel. apart), flavour 1 = −2.10504892e-08 / −2.10504891e-08 (5.2e-9 apart). The spread is the solver's (random multigrid setup vectors, finite tolerance), not the contraction's (~1e-15 in `test_contract_random`). **Not yet compared with cvc**, so correctness against production is still open |
 | same comparison on cB211a.072.64 configuration 500, production layout | agreement at solver precision | — |
+| schedule loop on random propagators: pair count, solves and cache peak equal `simulate()`; device and host-staged cache agree; a pair equals a direct `Contractor` call on regenerated fields; window ranges `[0,1)` + `[1,3)` reproduce the whole run; the HDF5 file holds exactly the computed rows | ~1e-10 relative (atomicAdd order) | done, `test_driver_random`. Checked to be able to fail: swapping the source and sink propagators in the loop, and breaking the host cache's re-staging, each make it fail |
+| whole binary on random fields | exits 0, 80 pairs for one shift | done, `hypercube_random_fields` |
+| `hlbl_hypercube` with the solver on the production configuration | runs, and its pairs reproduce `check_pair` | — (needs enough GPUs for the cache, see "Running the driver") |
 
 ## The schedule
 
@@ -153,6 +156,69 @@ checks `hlbl_hypercube --dry-run`'s schedule against the Python reference for
 several step directions, strides and step counts by calling the reference's
 own functions -- not by parsing its prose output.
 
+## Running the driver
+
+`hlbl_hypercube` runs a schedule and writes the kernel sums of all its pairs.
+
+```
+hlbl_hypercube [--direction HT HX HY HZ] [--stride n] [--steps K] [--origin T X Y Z]
+               [--out results.h5] [--timing timing.csv]
+               [--cache device|host] [--window-range a:b] [--force]
+               [--dry-run [--show-window k] [--flavors 1|2] [--lattice T X Y Z]]
+               [--random-fields --lattice T X Y Z --procs PT PX PY PZ]
+```
+
+- **Modes.** By default the propagators come from tmLQCD/QUDA: geometry, gauge
+  field and operators are read from `invert.input` in the working directory,
+  exactly as for `check_pair`, and `--lattice`/`--procs` are not used.
+  `--random-fields` replaces the solves by seeded noise on a lattice given on
+  the command line, which exercises everything else with no gauge field and no
+  solver. `--dry-run` builds the schedule and prints its counts and the cache
+  peak, on rank 0, without touching the GPU.
+- **Steps.** `--steps` is the number of shifts K (K + 1 windows, 16 + 15·K
+  solves, 15 + 65·K pairs). The default is as many as fit before sources wrap
+  onto sites already used.
+- **Cache.** `--cache device` keeps every cached propagator on the GPU;
+  `--cache host` keeps them in pinned host memory and stages the two a
+  contraction needs, so the device holds three blocks (two staging slots and a
+  solve target). Either way a source is dropped as soon as its last pair is
+  done.
+- **Memory.** One source position is 2 flavours × 12 × 24 doubles per site:
+  4608 B per local site, 9 GiB per rank at the production layout (local
+  64×32×32×32). Window 0 alone holds 16 positions and the peak is 30, so
+  **the full-volume cache does not fit at 16 GPUs** (270 GiB per rank). It fits
+  from 32 nodes (~34 GiB per rank, device cache), or with sparsened
+  propagators (future work). The driver prints the estimate against the free
+  device memory and this rank's share of the node's host memory before doing
+  anything expensive, and stops if it will not fit; `--force` overrides that.
+  `scripts/hlbl_mII_hypercube_schedule.py` gives the same numbers for any
+  lattice and process grid.
+- **Restarting.** `--window-range a:b` runs windows a to b-1 (`a:` runs to the
+  end). Before window a it re-solves the sources of earlier windows that
+  window a's pairs need (15 of them for a > 0), so a chain can be split over
+  several jobs at window boundaries; each job writes its own file.
+
+### Output
+
+One HDF5 file per run, rows appended and flushed after every window, so a job
+that is killed keeps the windows it finished:
+
+| dataset | shape | content |
+|---|---|---|
+| `x`, `y` | N × 4 int | the pair's two sources (global sites); `x` is the earlier one and the kernel origin |
+| `yv` | N × 4 int | minimum-image separation `y − x`, always (±n, ±n, ±n, ±n) |
+| `window` | N int | window that closed the pair |
+| `kernel_sum` | N × 2 double | flavour 0, flavour 1 |
+
+Attributes: `lattice`, `procs`, `direction`, `origin`, `stride`, `nconf`,
+`window_begin`, `window_end`, `kernel` (`LLambda0.4`), `flavour_order` and
+`hlbl_revision` (the git revision of this tree when CMake last configured).
+
+`--timing` (default: the result file's name with `.timing.csv`) records one CSV
+row per solve (`kind,window,x0..x3,y0..y3,seconds,iterations`) and one per
+kernel sum, which is where per-solve and per-kernel-sum times for a resource
+estimate come from.
+
 ## Running on Alps
 
 `check_pair` (`sanity_check/check_pair.cpp`) inverts two point sources through
@@ -212,4 +278,4 @@ Not implemented:
   orderings carry different terms of the master formula.
 - Single-precision propagator cache.
 - Several chains or step directions per job.
-- Restart from inside a window.
+- Restart from inside a window (`--window-range` restarts at window boundaries only).

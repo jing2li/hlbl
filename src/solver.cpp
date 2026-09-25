@@ -67,9 +67,9 @@ namespace {
 // unit source at local site `local_index` (or none, on ranks that do not
 // own it) and spin-colour component `component`, solution into `solution`
 // (kappa-normalised, matching invert_quda_direct's own convention).
-void solve_component(bool owns_site, std::size_t local_index, int component,
-                      int op_id, std::vector<double>& source,
-                      std::vector<double>& solution) {
+int solve_component(bool owns_site, std::size_t local_index, int component,
+                     int op_id, std::vector<double>& source,
+                     std::vector<double>& solution) {
   std::fill(source.begin(), source.end(), 0.0);
   if (owns_site) {
     source[kSpinColor * kComplex * local_index + kComplex * component] = 1.0;
@@ -79,6 +79,7 @@ void solve_component(bool owns_site, std::size_t local_index, int component,
     throw std::runtime_error(
         "hlbl::Solver: invert_quda_direct did not converge");
   }
+  return iter;
 }
 
 }  // namespace
@@ -104,8 +105,8 @@ std::array<double, 3> Solver::plaquette() const {
   return {plaq[0], plaq[1], plaq[2]};
 }
 
-void Solver::invert_point(const Vec4& gsx, int op_id,
-                           DeviceBuffer<double>& dest, std::size_t offset) {
+int Solver::invert_point(const Vec4& gsx, int op_id,
+                          DeviceBuffer<double>& dest, std::size_t offset) {
   std::size_t const volume = lattice_->volume();
   std::size_t const spinor_len = kSpinColor * kComplex * volume;
 
@@ -114,11 +115,22 @@ void Solver::invert_point(const Vec4& gsx, int op_id,
   std::size_t const site = owns ? lattice_->local_index(owner.local_coord) : 0;
 
   std::vector<double> source(spinor_len), solution(spinor_len);
+  int iterations = 0;
   for (int i = 0; i < kSpinColor; ++i) {
-    solve_component(owns, site, i, op_id, source, solution);
+    iterations += solve_component(owns, site, i, op_id, source, solution);
     dest.copy_from_host(offset + static_cast<std::size_t>(i) * spinor_len,
                          solution.data(), spinor_len);
   }
+  return iterations;
+}
+
+int SolverProvider::compute(const Vec4& gsx, DeviceBuffer<double>& dest) {
+  std::size_t const per_flavor = block_length(solver_.lattice()) / 2;
+  int iterations = 0;
+  for (int flavor = 0; flavor < 2; ++flavor) {
+    iterations += solver_.invert_point(gsx, flavor, dest, flavor * per_flavor);
+  }
+  return iterations;
 }
 
 }  // namespace hlbl

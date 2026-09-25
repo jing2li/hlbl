@@ -69,9 +69,25 @@ add_library(hlbl_core STATIC
   src/gamma.cpp
   src/schedule.cpp
   src/geometry.cpp
-  src/contract.cpp)
+  src/contract.cpp
+  src/provider.cpp
+  src/propagator_cache.cpp
+  src/output.cpp
+  src/driver.cpp)
 target_include_directories(hlbl_core PUBLIC include)
-target_link_libraries(hlbl_core PUBLIC hlbl_kernels_obj)
+target_link_libraries(hlbl_core PUBLIC hlbl_kernels_obj HDF5::HDF5)
+
+# The revision of this tree, recorded in every result file. Taken when CMake
+# configures, so re-run cmake after committing to refresh it.
+execute_process(
+  COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} describe --always --dirty --abbrev=12
+  OUTPUT_VARIABLE HLBL_GIT_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+if (NOT HLBL_GIT_REVISION)
+  set(HLBL_GIT_REVISION unknown)
+endif()
+set_source_files_properties(src/output.cpp PROPERTIES
+  COMPILE_DEFINITIONS HLBL_GIT_REVISION="${HLBL_GIT_REVISION}")
 
 # ---------------------------------------------------------------------------
 # hlbl_solver: the tmLQCD/QUDA interface (gauge read, plaquette, point-source
@@ -108,11 +124,16 @@ function(hlbl_test name)
 endfunction()
 
 hlbl_executable(hlbl_hypercube bin/hlbl_hypercube.cpp)
+if (HLBL_WITH_TMLQCD)
+  target_link_libraries(hlbl_hypercube PRIVATE hlbl_solver)
+  target_compile_definitions(hlbl_hypercube PRIVATE HLBL_HAVE_SOLVER)
+endif()
 
 hlbl_test(test_schedule)
 hlbl_test(test_gamma)
 hlbl_test(test_lattice)
 hlbl_test(test_contract_random)
+hlbl_test(test_driver_random)
 
 # check_pair needs a real gauge configuration and a solve that can take
 # minutes to set up, so it is a manual tool (see its own top-of-file
@@ -124,6 +145,14 @@ if (HLBL_WITH_TMLQCD)
     CUDA_SEPARABLE_COMPILATION ON
     CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
+
+# the whole binary on random fields: argument parsing, memory estimate, run,
+# HDF5 and timing files (K = 1 shift: 15 + 65 = 80 pairs)
+add_test(NAME hypercube_random_fields
+  COMMAND hlbl_hypercube --random-fields --lattice 6 6 6 6 --stride 1 --steps 1
+          --out hypercube_random_fields.h5)
+set_tests_properties(hypercube_random_fields PROPERTIES
+  PASS_REGULAR_EXPRESSION "done: 80 pairs")
 
 add_test(NAME compare_schedule
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/compare_schedule.sh
