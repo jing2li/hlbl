@@ -18,7 +18,7 @@ vendored in `kernels/`. Nothing else is taken from cvc.
 | 2 | CMake build: KQED_cuda, `hlbl_kernels`, tmLQCD found, `hlbl_hypercube` stub links | done |
 | 3 | host core: `lattice`, `mdarray`, `gamma`, `schedule`; `hlbl_hypercube --dry-run`; tests `test_schedule`, `test_gamma`, `test_lattice`, `scripts/compare_schedule.sh` | done |
 | 4 | `contract` (dzu/dzsu → γ products → 4-pt kernel sum, persistent device buffers); `test_contract_random` | done |
-| 5 | `solver` (tmLQCD init, gauge read, plaquette check, MG setup solve, point-source solves); `check_pair` | in progress: builds, gauge read verified on the real configuration; first end-to-end `check_pair` result pending |
+| 5 | `solver` (tmLQCD init, gauge read, plaquette check, MG setup solve, point-source solves); `check_pair` | done: runs end to end on the production configuration (see "Running on Alps") |
 | 6 | driver: `propagator_cache` (host or device residency), HDF5 output, timing CSV, `--window-range` | — |
 | 7 | validation against cvc, timing runs at 16 and 32 nodes on 128×64³ | — |
 
@@ -34,7 +34,9 @@ and HDF5. `hlbl_solver` adds tmLQCD. Tests that don't solve link only
 | gamma tables | Clifford algebra; γ5 = γ0γ1γ2γ3 in the cvc convention | done, `test_gamma` (γμ²=γ5²=1, pairwise anticommutation) |
 | random-field contraction, single rank | finite result, reproduces a stored golden value (~1e-10 rel., atomicAdd order is not fixed run to run) | done, `test_contract_random` |
 | random-field contraction on 1×1×1×1 vs 2×1×1×1 ranks | agreement to rounding | not automated: the field is seeded by each site's *global* index for exactly this, but running it under two process grids and diffing is a manual step, not yet in ctest |
-| free field (identity gauge, 16×8³, CG solver) vs cvc `hlbl_mII_invert_contract` built with `-DDO_CONNECTED=1`, source at origin, y = n·(1,1,1,1) | `check_pair` and the driver's corresponding pair agree to ~1e-10 relative | — |
+| free field (identity gauge, 16×8³, CG solver) vs cvc `hlbl_mII_invert_contract` built with `-DDO_CONNECTED=1`, source at origin, y = n·(1,1,1,1) | `check_pair` and the driver's corresponding pair agree to solver precision (expect ~1e-8 relative with the multigrid solver, see above; tighter with CG) | — |
+| gauge field seen by QUDA, cB211a.072.64 #500, 16 GPUs | QUDA's mean plaquette equals the file's recorded 0.554279822834 | done, 12 digits (`check_pair`, `plaqQuda` order is {mean, spatial, temporal}) |
+| real-propagator `kernel_sum` for the pair (origin, origin + 2·(1,1,1,1)) | finite, reproducible run to run | done, two independent 16-GPU runs: flavour 0 = −4.61833559e-08 / −4.61833559e-08 (1.5e-9 rel. apart), flavour 1 = −2.10504892e-08 / −2.10504891e-08 (5.2e-9 apart). The spread is the solver's (random multigrid setup vectors, finite tolerance), not the contraction's (~1e-15 in `test_contract_random`). **Not yet compared with cvc**, so correctness against production is still open |
 | same comparison on cB211a.072.64 configuration 500, production layout | agreement at solver precision | — |
 
 ## The schedule
@@ -150,6 +152,50 @@ golden value. `compare_schedule` runs `scripts/compare_schedule.sh`, which
 checks `hlbl_hypercube --dry-run`'s schedule against the Python reference for
 several step directions, strides and step counts by calling the reference's
 own functions -- not by parsing its prose output.
+
+## Running on Alps
+
+`check_pair` (`sanity_check/check_pair.cpp`) inverts two point sources through
+tmLQCD/QUDA and contracts the one pair they form. It is a manual tool: it
+needs a real gauge configuration, and the multigrid setup takes about a
+minute.
+
+```bash
+mkdir run && cd run
+../scripts/gen_invert_input.sh -o . -T 128 -L 64 -p 2,2,2,2     # writes invert.input
+sbatch --export=ALL,HLBL_ROOT=$PWD/..,HLBL_BIN=/path/to/build/check_pair ../scripts/slurm/check_pair.sbatch
+```
+
+Everything the program needs comes from `invert.input` in the working
+directory: tmLQCD reads the lattice, the process grid, the gauge file and the
+operators from it (`tmLQCD_invert_init`), and `hlbl::Solver` builds its
+geometry from tmLQCD's own parameters. Measured on 4 nodes (16 GPUs,
+128×64³, local volume 64×32×32×32): the setup solve takes ~50 s and each
+point-source solve ~2.3 s (46-47 iterations), i.e. ~55 s per source position
+for both flavours.
+
+Three things that are easy to get wrong, each of which cost a failed run:
+
+- **Local volume per GPU.** The multigrid setup of `invert.input.in` (2048
+  coarse-level deflation vectors) fits in GPU memory at a local volume of
+  64×32×32×32, the production layout. 1 GPU (16× that volume) and 4 GPUs (4×)
+  failed, with an illegal-address error, a "failed to allocate device memory"
+  abort, or a crash. Use 16 GPUs for 128×64³, and check
+  `gen_invert_input.sh`'s multigrid-blocking constraint for other lattices.
+- **GPU placement.** tmLQCD asks QUDA for device 0 on *every* rank, and on
+  this system that is what it gets: left alone, all four ranks of a node share
+  GPU 0 (94 GB of 98 GB in use, GPUs 1-3 idle). Giving each rank a single
+  visible GPU does not work either, since QUDA's communicator setup requires
+  as many visible devices as ranks on the node ("Too few GPUs available").
+  `scripts/slurm/per_rank.sh` shows every rank all the node's GPUs, rotated so
+  its own comes first; `check_pair` prints each rank's PCI bus id after the
+  setup solve, and a node's four ranks must show four different ids.
+- **Core dumps.** A crashed job can leave a core file larger than the 50 GB
+  home quota. The job scripts set `ulimit -c 0`.
+
+QUDA also refuses a tuning cache written by a different QUDA version and
+aborts, so point `QUDA_RESOURCE_PATH` at a fresh directory when switching
+builds.
 
 ## Future work
 

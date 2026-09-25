@@ -39,13 +39,16 @@ class Solver {
   // path itself).
   void read_gauge();
 
-  // A dummy volume-source solve: where the QUDA multigrid setup (or, for a
+  // A dummy point-source solve: where the QUDA gauge load and multigrid setup (or, for a
   // plain CG operator, nothing extra) is paid for. Call once, before timing
   // or trusting any other solve's cost, and before plaquette().
   void warm_up();
 
-  // QUDA's plaqQuda(): {spatial, temporal, mean} plaquette of the gauge it
-  // has loaded. Only meaningful after read_gauge() and at least one solve.
+  // QUDA's plaqQuda(): {mean, spatial, temporal} plaquette of the gauge it
+  // has loaded; mean == (spatial + temporal) / 2, and it is the number the
+  // gauge file's header records (checked on cB211a.072.64 #500: 0.554279822834
+  // to all 12 digits). Only meaningful after read_gauge() and at least one
+  // solve.
   std::array<double, 3> plaquette() const;
 
   // 12 point-source solves at the global site gsx, one per spin-colour

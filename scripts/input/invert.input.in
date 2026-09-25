@@ -1,0 +1,114 @@
+# ---------------------------------------------------------------------------
+# tmLQCD lib-wrapper input for time_invert, generated from
+#   /capstor/store/cscs/userlab/lp142/nkalntis/hlbl-cBa/500/invert.input
+# Placeholders are filled in by scripts/gen_input.sh.  Everything else -- the
+# quark masses, csw, and the whole QUDA multigrid setup -- is the production
+# setup verbatim, because the solve time is what is being measured.
+#
+# NOTE tmLQCD describes the lattice as T x L^3, so only spatially cubic
+# global lattices can be expressed here; scripts/procgrid.py --cubic-space
+# picks process grids that respect that.
+# ---------------------------------------------------------------------------
+ompnumthreads = @THREADS@
+
+L=@L@
+T=@T@
+
+DisableIOChecks = no
+DebugLevel = 2
+InitialStoreCounter = @NCONF@
+Measurements = 1
+
+2kappamu = 0.000200774160 #light-quarks
+#2kappamu = 0.005186666 #strange quark
+#2kappamu = 0.0694344 #charm quark
+kappa = 0.1394265
+
+csw = 1.69
+
+BCAngleT = 1
+
+NRXProcs = @NPX@
+NRYProcs = @NPY@
+NRZProcs = @NPZ@
+
+GaugeConfigInputFile= @GAUGE@
+UseEvenOdd = yes
+UseRelativePrecision = yes
+
+####################
+
+ranluxdlevel=2
+reproducerandomnumbers=no
+
+BeginExternalInverter QUDA
+  MGEigPreserveDeflationSubspace = yes
+  Pipeline = 8
+  ReliableDelta = 7.5e-6
+  gcrNkrylov = 24
+  MGCoarseMuFactor = 1.0, 1.0, 1.0
+  MGNumberOfLevels = 3
+  MGUseEigSolver = no, no, yes
+  MGEigSolverType = tr_lanczos, tr_lanczos, tr_lanczos
+  MGEigSolverSpectrum = smallest_real, smallest_real, smallest_real
+  MGNumberOfVectors = 24, 24, 2048
+  MGEigSolverNumberOfVectors = 24, 24, 2048
+  MGEigSolverKrylovSubspaceSize = 24, 24, 3072
+  MGEigSolverRequireConvergence = no, no, yes
+  MGEigSolverMaxRestarts = 100, 100, 100
+  MGEigSolverTolerance = 1e-4, 1e-4, 1e-4
+  MGEigSolverUseNormOp = no, no, yes
+  MGEigSolverUseDagger = no, no, no
+  MGEigSolverUsePolynomialAcceleration = no, no, yes
+  MGEigSolverPolynomialDegree = 100, 100, 100
+  MGEigSolverPolyMin = 0.8, 0.8, 0.8
+  MGEigSolverPolyMax = 8.0, 8.0, 8.0
+  MGVerbosity = silent, silent, silent
+  # MGResetSetupMuThreshold = 1e-15
+  MGSetupSolver = cg
+  MGSetupSolverTolerance = 5e-7, 5e-7, 5e-7
+  MGSetupMaxSolverIterations = 1e3, 1e3, 1e3
+  MGSetupCABasisSize = 8, 8, 8
+  MGSmootherType = cagcr, cagcr, cagcr
+  MGCoarseSolverType = gcr, gcr, cagcr
+  MgCoarseSolverTolerance = 0.25, 0.25, 0.1
+  MGCoarseMaxSolverIterations = 100, 8, 8
+  MGSmootherPreIterations = 0, 2
+  MGSmootherPostIterations = 4, 2
+  MGCoarseSolverCABasisSize = 8, 8, 8
+  MGBlockSizesX = 4,2
+  MGBlockSizesY = 4,2
+  MGBlockSizesZ = 4,2
+  MGBlockSizesT = 8,2
+  MGOverUnderRelaxationFactor = 0.95, 0.95, 0.95
+EndExternalInverter
+
+BeginOperator CLOVER
+  2kappamu = 0.000200774160 #light-quarks
+  #2kappamu = 0.005186666 #strange quark
+  #2kappamu = 0.0694344 #charm quark
+  csw = 1.69
+  kappa = 0.1394265
+  Solver = mg
+  useexternalinverter = quda
+  SolverPrecision = 1e-20
+  MaxSolverIterations = 500
+  usesloppyprecision = single
+  usecompression = 18
+  useevenodd = yes
+EndOperator
+
+BeginOperator CLOVER
+  2kappamu = -0.000200774160 #light-quarks
+  #2kappamu = -0.005186666 #strange quark
+  #2kappamu = -0.0694344 #charm quark
+  csw = 1.69
+  kappa = 0.1394265
+  Solver = mg
+  useexternalinverter = quda
+  SolverPrecision = 1e-20
+  MaxSolverIterations = 500
+  usesloppyprecision = single
+  usecompression = 18
+  useevenodd = yes
+EndOperator

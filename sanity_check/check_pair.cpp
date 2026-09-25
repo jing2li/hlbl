@@ -8,15 +8,18 @@
 // minutes to set up. Options are tmLQCD's own (mpirun/srun -np N ...
 // check_pair, reading invert.input from cwd) plus:
 //
-//   check_pair [n]
+//   check_pair [n [plaquette]]
 //
 // n is the stride along the (1,1,1,1) direction (default 1): the pair is
 // (origin, origin + n*(1,1,1,1)), the same convention the hypercube
-// schedule uses.
+// schedule uses. If plaquette is given (the value in the gauge file's
+// xlf-info record), the run fails unless QUDA's mean plaquette agrees to
+// 1e-9.
 
 #include <mpi.h>
 
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
@@ -55,6 +58,8 @@ int main(int argc, char** argv) {
 
   try {
     int const stride = (argc > 1) ? std::atoi(argv[1]) : 1;
+    bool const have_expected = (argc > 2);
+    double const expected_plaquette = have_expected ? std::atof(argv[2]) : 0.0;
 
     Solver solver(argc, argv);
     if (rank == 0) {
@@ -69,12 +74,30 @@ int main(int argc, char** argv) {
     solver.read_gauge();
     solver.warm_up();  // pays for the QUDA gauge load / multigrid setup
 
+    // Which GPU each rank ended up on. QUDA picks the device on the first
+    // solve (from tmLQCD's node-local rank), so this must follow warm_up():
+    // before it, every rank still reports the default device 0. Repeated
+    // bus ids mean ranks share a GPU (a launcher restricting device
+    // visibility, or a node oversubscribed).
+    {
+      int dev = -1;
+      cudaGetDevice(&dev);
+      char busid[32] = "?";
+      cudaDeviceGetPCIBusId(busid, sizeof(busid), dev);
+      std::printf("# [check_pair] rank %d: cuda device %d, pci %s\n", rank, dev,
+                  busid);
+      std::fflush(stdout);
+    }
+
     auto plaq = solver.plaquette();
     if (rank == 0) {
-      std::printf("# [check_pair] plaqQuda {spatial, temporal, mean} = %.12f %.12f %.12f\n",
+      std::printf("# [check_pair] plaqQuda {mean, spatial, temporal} = %.12f %.12f %.12f\n",
                   plaq[0], plaq[1], plaq[2]);
-      std::printf("# [check_pair] compare against the configuration's recorded plaquette "
-                  "(printed in the gauge file's xlf-info record)\n");
+    }
+    if (have_expected && std::fabs(plaq[0] - expected_plaquette) > 1e-9) {
+      throw std::runtime_error("check_pair: QUDA plaquette " +
+                               std::to_string(plaq[0]) + " does not match the "
+                               "expected " + std::to_string(expected_plaquette));
     }
 
     QED_kernel_temps kqed_t;
