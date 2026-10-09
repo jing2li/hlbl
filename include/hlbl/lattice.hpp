@@ -12,15 +12,11 @@ namespace hlbl {
 class Lattice {
  public:
   // procs: process grid (PT,PX,PY,PZ). local: local extents (T,LX,LY,LZ).
-  // Builds a periodic Cartesian communicator over comm, cvc's ordering
-  // (t,x,y,z), no reorder.
+  // Builds a periodic Cartesian communicator over comm, ordered (t,x,y,z).
   Lattice(MPI_Comm comm, const Vec4& procs, const Vec4& local);
 
-  // Wraps an ALREADY Cartesian communicator by duplicating it, rather than
-  // building a second, redundant topology on top of it. Used by
-  // hlbl::Solver to wrap tmLQCD's own tmLQCD_mpi_params.cart_grid -- cvc's
-  // own mpi_init.cpp does the same thing for the same reason
-  // (MPI_Comm_dup(g_tmLQCD_mpi.cart_grid, &g_cart_grid)).
+  // Uses a communicator that is already Cartesian (a duplicate of it). The
+  // Solver uses this for tmLQCD's own communicator.
   static Lattice from_existing_cart(MPI_Comm cart, const Vec4& procs,
                                      const Vec4& local);
 
@@ -32,20 +28,19 @@ class Lattice {
   int cart_rank() const { return cart_rank_; }
   std::size_t volume() const { return volume_; }
 
-  // Local site index, cvc's ((t*LX+x)*LY+y)*LZ+z: t slowest, z fastest.
-  // Coordinates must be in [0, local).
+  // Local site index ((t*LX+x)*LY+y)*LZ+z (t slowest, z fastest), as in
+  // tmLQCD. Coordinates must be in [0, local).
   std::size_t local_index(const Vec4& local_coord) const;
 
-  // The rank owning a global site, and that site's local coordinates on it
-  // (undefined on every other rank). global_coord must be in [0, global).
-  // Mirrors cvc get_point_source_info().
+  // The rank that owns a global site, and the site's local coordinates on it.
+  // global_coord must be in [0, global).
   struct Owner {
     int rank;
     Vec4 local_coord;
   };
   Owner owner(const Vec4& global_coord) const;
 
-  // Minimum-image difference a - b on this lattice's global extents.
+  // Difference a - b, shortest way around the periodic lattice.
   Vec4 site_map_diff(const Vec4& a, const Vec4& b) const {
     return hlbl::site_map_diff(a, b, global_);
   }

@@ -1,17 +1,10 @@
-// End-to-end check of the schedule loop (hlbl::run_schedule) on random
-// propagators: cache and eviction, both cache residencies, window ranges,
-// and the HDF5 output. No solver and no gauge field, so it runs anywhere
-// there is one GPU.
-//
-// What is checked:
-//  - the number of pairs and the cache peak agree with hlbl::simulate();
-//  - kernel_sum of a pair does not depend on cache residency (device vs
-//    pinned host with staging);
-//  - it also equals a direct Contractor call on freshly generated fields,
-//    i.e. the cache hands back the right block, in the right role;
-//  - splitting the run into window ranges reproduces the whole run,
-//    including the re-solve of the earlier sources a later range needs;
-//  - the HDF5 file holds exactly the rows that were computed.
+// Runs the schedule loop (run_schedule) on random propagators. Needs one GPU
+// but no solver or gauge field. Checks that:
+//  - the pair count and cache peak agree with simulate();
+//  - results are the same with a device cache and a host cache;
+//  - a pair equals a direct Contractor call on regenerated fields;
+//  - two window ranges together reproduce the whole run;
+//  - the HDF5 file holds exactly the computed rows.
 
 #include "hlbl/driver.hpp"
 
@@ -33,7 +26,7 @@ using namespace hlbl;
 
 namespace {
 
-// the atomicAdd order in the kernels is not fixed from run to run
+// the order of the atomicAdd sums in the kernels changes from run to run
 constexpr double kTol = 1e-10;
 
 bool close(double a, double b) {
@@ -79,7 +72,7 @@ int main(int argc, char** argv) {
   HLBL_CHECK(max_steps_without_wrap(h, stride, lat.global()) >= steps);
   Schedule const schedule = build_schedule(h, stride, steps);
   check_complete(schedule, stride);
-  auto const expect = simulate(schedule, 2, Mode::kSerial);
+  auto const expect = simulate(schedule, 2, Mode::kInterleaved);
 
   QED_kernel_temps kqed_t;
   HLBL_CHECK(initialise(&kqed_t) == 0);
@@ -153,7 +146,7 @@ int main(int argc, char** argv) {
     std::vector<PairResult> both = ra;
     both.insert(both.end(), rb.begin(), rb.end());
     check_same(dev, both);
-    // the second range re-solved the survivors of window 0 that it needs
+    // the second range solved again the window 0 sources it needs
     HLBL_CHECK(sb.positions_solved > schedule[1].n_new() + schedule[2].n_new());
   }
 

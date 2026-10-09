@@ -1,5 +1,4 @@
-// Gamma matrix tables, ported verbatim from cvc's init_gamma()
-// (cvc_utils.cpp). Row 4 is unused by this project and left zeroed.
+// Gamma matrix tables, copied from cvc's init_gamma(). Row 4 is unused.
 
 #include "hlbl/gamma.hpp"
 

@@ -1,16 +1,6 @@
-// End-to-end check of hlbl::Contractor on random propagator fields.
-//
-// Fields are seeded by each site's GLOBAL lattice index (not the local
-// one), so the same field values appear under any process grid that tiles
-// the same global lattice -- letting a human check kernel_sum agreement
-// across process grids by running this binary under different -np. This
-// (single-rank) test does not do that itself, only a single-rank run.
-//
-// No physics: the fields are structureless noise, so what is checked here
-// is that the contraction pipeline (dzu/dzsu -> g5/gamma_mu -> 4-point ->
-// QED kernel -> MPI reduce) runs to completion, gives a finite result, and
-// reproduces a stored golden value -- a regression guard, not a physics
-// check.
+// Runs the Contractor on random propagator fields (one rank). The fields are
+// noise, so this checks only that the pipeline gives a finite result and
+// reproduces a stored value. It is a regression test, not a physics test.
 
 #include "hlbl/contract.hpp"
 
@@ -62,13 +52,8 @@ int main(int argc, char** argv) {
 
   for (double v : result) HLBL_CHECK(std::isfinite(v));
 
-  // Regression guard: the value the pipeline produced when this test was
-  // written. The fields are structureless noise, so this is not a physics
-  // check -- only a check that the pipeline still reproduces itself. The
-  // tolerance is looser than double precision because kernel_sum is an
-  // atomicAdd reduction over threads whose completion order (and hence
-  // summation order) is not fixed from run to run; observed drift is
-  // ~1e-15 relative, so 1e-10 leaves ample margin.
+  // Stored values from the first run. The tolerance allows for the order of
+  // the atomicAdd sums changing from run to run.
   const double golden[2] = {6.5973514693254831e+00, -6.9614442514884631e+00};
   for (int f = 0; f < 2; ++f) {
     double rel =

@@ -28,7 +28,12 @@ DeviceBuffer<double>& PropagatorCache::begin_insert(const Vec4& position) {
 void PropagatorCache::end_insert(const Vec4& position) {
   if (residency_ == Residency::kHost) {
     Entry& e = entries_[position];
-    e.host = PinnedBuffer<double>(block_len_);
+    if (pool_.empty()) {
+      e.host = PinnedBuffer<double>(block_len_);
+    } else {
+      e.host = std::move(pool_.back());
+      pool_.pop_back();
+    }
     scratch_.copy_to_host(e.host.data(), block_len_);
   }
   peak_ = std::max(peak_, size());
@@ -65,7 +70,13 @@ bool PropagatorCache::contains(const Vec4& position) const {
 }
 
 void PropagatorCache::evict(const Vec4& position) {
-  entries_.erase(position);
+  auto it = entries_.find(position);
+  if (it != entries_.end()) {
+    if (residency_ == Residency::kHost) {
+      pool_.push_back(std::move(it->second.host));
+    }
+    entries_.erase(it);
+  }
   for (auto& s : staged_) {
     if (s && *s == position) s.reset();
   }

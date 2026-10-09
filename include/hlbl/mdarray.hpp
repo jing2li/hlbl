@@ -1,10 +1,7 @@
 #pragma once
 
-// RAII wrappers around the three kinds of storage the driver needs for a
-// propagator cache: plain host memory, pinned (page-locked) host memory,
-// and device memory. Deliberately thin -- indexing into a block is the
-// caller's responsibility, matching the flat-pointer layout the vendored
-// GPU kernels expect.
+// Thin owning wrappers for host, pinned host and device memory. Indexing is
+// left to the caller; the GPU kernels take flat pointers.
 
 #include <cuda_runtime.h>
 
@@ -98,8 +95,7 @@ class DeviceBuffer {
   std::size_t size_ = 0;
 };
 
-// Owning pinned (page-locked) host buffer, for fast H2D/D2H staging of a
-// host-resident propagator cache (see hlbl::PropagatorCache, phase 6).
+// Pinned (page-locked) host buffer, for fast copies to and from the GPU.
 template <typename T>
 class PinnedBuffer {
  public:

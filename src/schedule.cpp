@@ -186,6 +186,13 @@ ScheduleStats simulate(const Schedule& steps, int n_flavors, Mode mode) {
 
   for (std::size_t k = 0; k < steps.size(); ++k) {
     const Step& step = steps[k];
+    if (mode == Mode::kInterleaved) {
+      for (const auto& src : step.sources) {
+        invert(src.position);
+        for (const auto& q : src.partners) contract(q, src.position);
+      }
+      continue;
+    }
     if (mode == Mode::kSerial || k == 0) {
       for (const auto& src : step.sources) invert(src.position);
     }

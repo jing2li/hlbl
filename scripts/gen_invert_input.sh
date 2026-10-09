@@ -3,19 +3,17 @@
 #
 #   gen_invert_input.sh -o RUNDIR -T 128 -L 64 -p NT,NX,NY,NZ [options]
 #
-# tmLQCD_invert_init reads invert.input from the working directory; the
-# lattice, process grid, operators and multigrid setup all come from it, so
-# this is the only input file the programs need. The template is
-# scripts/input/invert.input.in, copied from cvc's time_hlbl (production
-# reference run, 3-level multigrid with coarse-level deflation).
+# tmLQCD reads invert.input from the working directory. It sets the lattice,
+# process grid, operators and multigrid, so it is the only input file the
+# programs need. The template is scripts/input/invert.input.in.
 #
-# Constraints, all checked here:
+# Checks done here:
 #  - every process count divides its lattice extent;
 #  - every local extent is a multiple of 2 * prod(MGBlockSizes) of the
-#    template, or tmLQCD's multigrid aborts with "Blocking error";
-#  - memory: the multigrid setup of this template needs a local volume of
-#    about 64x32x32x32 or less per GPU (16 GPUs for 128x64^3). Larger local
-#    volumes were seen to run out of device memory.
+#    template (otherwise the multigrid aborts with "Blocking error").
+#
+# Memory: the multigrid setup needs a local volume of at most 64x32x32x32
+# per GPU (16 GPUs for 128x64^3).
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 

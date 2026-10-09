@@ -1,8 +1,6 @@
 #pragma once
 
-// Minimal assertion macro for the sanity_check programs: no framework, just
-// print-and-exit-nonzero on failure so these run as plain executables or
-// CTest cases alike.
+// Minimal assertion macro for the tests: prints and exits with an error code.
 
 #include <cstdio>
 #include <cstdlib>

@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# compare_schedule.sh — checks hlbl_hypercube --dry-run's schedule against
-# the Python reference (hlbl_mII_hypercube_schedule.py) for several step
-# directions, strides and step counts.
-#
-# The Python side calls the reference's own build_schedule/check_complete/run
-# functions directly and prints the same canonical lines the C++ side prints
-# (see hlbl_hypercube.cpp), rather than scraping its human-readable report --
-# that keeps the comparison exact without changing the reference at all.
+# compare_schedule.sh: checks the schedule printed by hlbl_hypercube --dry-run
+# against the Python reference (hlbl_mII_hypercube_schedule.py) for several
+# step directions, strides and step counts. The Python side prints the same
+# lines as the C++ side (see hlbl_hypercube.cpp).
 #
 # Usage: scripts/compare_schedule.sh <path-to-hlbl_hypercube>
 
@@ -28,7 +24,7 @@ origin = (0, 0, 0, 0)
 steps = hs.build_schedule(h, $stride, $steps, origin)
 hs.check_complete(steps, $stride)
 
-for mode in ('serial', 'pipelined'):
+for mode in ('serial', 'pipelined', 'interleaved'):
     s = hs.run(steps, (128, 64, 64, 64), 2, mode)
     print(f'mode={mode} n_propagators={s.n_propagators} n_solves={s.n_solves} '
           f'n_pairs={s.n_pairs} n_kernel_sums={s.n_kernel_sums} peak_cache={s.peak_cache}')

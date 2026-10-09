@@ -1,5 +1,4 @@
-// Single-rank checks of Lattice: local indexing, site ownership and
-// minimum-image differences.
+// Checks Lattice on one rank: local index, site owner, periodic difference.
 
 #include "hlbl/lattice.hpp"
 

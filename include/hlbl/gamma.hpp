@@ -4,20 +4,18 @@
 
 namespace hlbl {
 
-// A 12-component spin-colour spinor stored as 24 doubles, real and imaginary
-// parts interleaved: component i = 3*spin + colour occupies [2i, 2i+1].
-// Matches cvc's _GSI layout and the propagator blocks the vendored GPU
-// kernels expect.
+// A spin-colour spinor: 12 complex numbers as 24 doubles (real, imaginary
+// interleaved). Component i = 3*spin + colour is at [2i, 2i+1]. This is the
+// layout of the propagator blocks.
 using Spinor24 = std::array<double, 24>;
 
-// gamma_0 .. gamma_3 and gamma_5, in the cvc basis and sign convention
-// (cvc_utils.cpp init_gamma()). Row index is the cvc gamma index: 0-3 are
-// the spacetime gammas, 5 is gamma_5. Row 4 is unused and zeroed.
+// gamma_0..gamma_3 and gamma_5 in the cvc basis. Row 5 is gamma_5; row 4 is
+// unused.
 inline constexpr int kNumGamma = 6;
 extern const int gamma_permutation[kNumGamma][24];
 extern const int gamma_sign[kNumGamma][24];
 
-// s = gamma_index . t, i.e. cvc's _fv_eq_gamma_ti_fv(s, gamma_index, t).
+// s = gamma_index * t
 inline Spinor24 apply_gamma(int gamma_index, const Spinor24& t) {
   Spinor24 s{};
   for (int k = 0; k < 24; ++k) {

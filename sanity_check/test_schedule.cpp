@@ -1,6 +1,6 @@
-// Checks the schedule against the worked examples in the README and against
-// its own completeness/no-wrap invariants. scripts/compare_schedule.sh does
-// the complementary check against the Python reference.
+// Checks the schedule: window sizes, pair counts, completeness and the
+// cache peak of each mode. scripts/compare_schedule.sh compares it with the
+// Python reference.
 
 #include "hlbl/schedule.hpp"
 
@@ -36,9 +36,8 @@ int main() {
     }
   }
 
-  // K = 30 shifts: 466 propagators, 1965 pairs, peak cache 30 (serial) / 45
-  // (pipelined) -- the numbers validated in the README and in the Python
-  // prototype.
+  // K = 30 shifts: 466 propagators, 1965 pairs. Peak cache: 16 (interleaved),
+  // 30 (serial), 45 (pipelined).
   {
     Vec4 h{1, 1, 1, 1};
     auto steps = build_schedule(h, 4, 30);
@@ -55,6 +54,12 @@ int main() {
     HLBL_CHECK(pipelined.n_propagators == serial.n_propagators);
     HLBL_CHECK(pipelined.n_pairs == serial.n_pairs);
     HLBL_CHECK(pipelined.peak_cache == 45);
+
+    auto interleaved = simulate(steps, 2, Mode::kInterleaved);
+    HLBL_CHECK(interleaved.n_propagators == serial.n_propagators);
+    HLBL_CHECK(interleaved.n_pairs == serial.n_pairs);
+    HLBL_CHECK(interleaved.n_kernel_sums == serial.n_kernel_sums);
+    HLBL_CHECK(interleaved.peak_cache == 16);
   }
 
   // max_steps_without_wrap: on a lattice too small to hold many windows

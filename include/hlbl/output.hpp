@@ -1,6 +1,6 @@
 #pragma once
 
-// Results and timings of a run, written by rank 0.
+// Result file (HDF5) and timing log (CSV). Rank 0 writes both.
 
 #include <array>
 #include <cstdio>
@@ -27,18 +27,18 @@ struct RunInfo {
   Vec4 direction{};  // hypercube step direction h
   Vec4 origin{};
   int stride = 0;    // n; every pair has |y| = 2n
-  int nconf = -1;    // gauge configuration number, -1 if none
+  int nconf = -1;    // gauge configuration number (-1: none, random fields)
   int window_begin = 0;
   int window_end = 0;  // half-open
   std::string kernel = "LLambda0.4";
 };
 
-// One HDF5 file per run, with extendable datasets, one row per pair:
+// One HDF5 file per run, one row per pair:
 //   x[N][4], y[N][4], yv[N][4]  int
 //   window[N]                   int
 //   kernel_sum[N][2]            double  (flavour 0, 1)
-// and the RunInfo plus the source revision as attributes. Rows are flushed
-// to disk on every append(), so a killed job keeps the windows it finished.
+// RunInfo and the git revision are stored as attributes. Rows are flushed on
+// every append(), so a killed job keeps the windows it finished.
 class ResultWriter {
  public:
   ResultWriter(const std::string& path, const RunInfo& info);
@@ -59,8 +59,7 @@ class ResultWriter {
 
 // One CSV row per solve and per kernel sum:
 //   kind,window,x0..x3,y0..y3,seconds,iterations
-// A solve has no y (left empty) and its iteration count; a kernel sum has
-// both sites and no iteration count.
+// A solve leaves y empty; a kernel sum leaves iterations empty.
 class TimingLog {
  public:
   explicit TimingLog(const std::string& path);

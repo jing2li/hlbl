@@ -12,8 +12,7 @@ namespace {
 Coord to_coord(const Vec4& v) { return Coord{v[0], v[1], v[2], v[3]}; }
 Geom to_geom(const Vec4& v) { return Geom{v[0], v[1], v[2], v[3]}; }
 
-// out = gamma_mu . gamma_5 . in -- cvc's "insert g5, then gamma_mu"
-// (_fv_eq_gamma_ti_fv(s, 5, in) followed by _fv_eq_gamma_ti_fv(out, mu, s)).
+// out = gamma_mu * gamma_5 * in
 void insert_g5_gamma(double* out, int mu, const double* in) {
   Spinor24 t;
   std::copy(in, in + 24, t.begin());
@@ -40,7 +39,7 @@ void Contractor::compute_dzu_dzsu(const double* d_fwd_src,
   d_dzu_.copy_to_host(local_dzu.data(), kDzuLen);
   d_dzsu_.copy_to_host(local_dzsu.data(), kDzsuLen);
 
-  // every rank needs the full z-sum before it can do its own x-sum
+  // every rank needs the full sum over all ranks
   std::array<double, kDzuLen> dzu;
   std::array<double, kDzsuLen> dzsu;
   MPI_Allreduce(local_dzu.data(), dzu.data(), kDzuLen, MPI_DOUBLE, MPI_SUM,
@@ -48,8 +47,7 @@ void Contractor::compute_dzu_dzsu(const double* d_fwd_src,
   MPI_Allreduce(local_dzsu.data(), dzsu.data(), kDzsuLen, MPI_DOUBLE, MPI_SUM,
                 lattice_.cart_comm());
 
-  // g_dzu[k][mu][ia] = insert_g5_gamma(mu, dzu[k][ia]); layout matches
-  // production's init_4level_dtable(6,4,12,24): ((k*4+mu)*12+ia)*24
+  // g_dzu[k][mu][ia] = gamma_mu * gamma_5 * dzu[k][ia]
   std::array<double, kGDzuLen> g_dzu;
   for (int k = 0; k < 6; ++k) {
     for (int ia = 0; ia < 12; ++ia) {
@@ -59,7 +57,7 @@ void Contractor::compute_dzu_dzsu(const double* d_fwd_src,
       }
     }
   }
-  // g_dzsu[s][mu][ia], layout ((s*4+mu)*12+ia)*24
+  // g_dzsu[s][mu][ia], the same for dzsu
   std::array<double, kGDzsuLen> g_dzsu;
   for (int s = 0; s < 4; ++s) {
     for (int ia = 0; ia < 12; ++ia) {
@@ -77,8 +75,7 @@ void Contractor::compute_dzu_dzsu(const double* d_fwd_src,
 double Contractor::compute_4pt(const double* d_fwd_src, const double* d_fwd_y,
                                 const Vec4& gsx, int iflavor, double xunit,
                                 const Vec4& yv) {
-  // cvc's xunit[2] = {value, its uncertainty}; only the value feeds the
-  // kernel (see cuda_lattice.cu, every use is xunit.a).
+  // the kernels take {value, uncertainty}; only the value is used
   Pair d_xunit{xunit, 0.0};
 
   d_kernel_sum_.zero();

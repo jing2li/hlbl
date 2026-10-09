@@ -19,9 +19,8 @@ void check(int status, const char* what) {
   }
 }
 
-// A single 12*volume-double propagator: [source component][site][sink
-// component, complex], TXYZ lexicographic order -- the layout
-// invert_quda_direct's host-side source/propagator buffers use.
+// Layout of a host spinor field: [site][12 spin-colour][re, im], in
+// tmLQCD's site order.
 constexpr int kSpinColor = 12;
 constexpr int kComplex = 2;
 
@@ -63,10 +62,9 @@ void Solver::read_gauge() {
 
 namespace {
 
-// One point-source solve, discarding nothing: op_id's twisted-mass operator,
-// unit source at local site `local_index` (or none, on ranks that do not
-// own it) and spin-colour component `component`, solution into `solution`
-// (kappa-normalised, matching invert_quda_direct's own convention).
+// Solves D x = source for a unit source at `local_index`, spin-colour
+// `component`, with operator op_id. Ranks that do not own the site pass
+// owns_site = false and use a zero source.
 int solve_component(bool owns_site, std::size_t local_index, int component,
                      int op_id, std::vector<double>& source,
                      std::vector<double>& solution) {
@@ -85,11 +83,8 @@ int solve_component(bool owns_site, std::size_t local_index, int component,
 }  // namespace
 
 void Solver::warm_up() {
-  // Any solve pays for QUDA's one-time gauge load and (for an MG operator)
-  // multigrid setup; the source and its solution are otherwise irrelevant,
-  // so a single point solve at the origin is enough -- unlike
-  // time_invert.cpp's dummy volume-source solve, which additionally wants
-  // to be a representative *timing* sample, not a concern here.
+  // The first solve loads the gauge field and sets up the multigrid, so one
+  // point-source solve at the origin is enough.
   std::size_t const volume = lattice_->volume();
   std::vector<double> source(kSpinColor * kComplex * volume, 0.0);
   std::vector<double> solution(kSpinColor * kComplex * volume, 0.0);

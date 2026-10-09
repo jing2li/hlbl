@@ -1,9 +1,7 @@
 #pragma once
 
-// tmLQCD/QUDA solver interface. No cvc dependency: geometry, the process
-// grid, the gauge field and the operator parameters all come from tmLQCD's
-// own input file (invert.input, read from the current working directory by
-// tmLQCD_invert_init) and its own wrapper API (tmLQCD.h).
+// tmLQCD/QUDA solver interface. The geometry, process grid, gauge field and
+// operators all come from invert.input in the working directory.
 
 #include <array>
 #include <memory>
@@ -15,14 +13,8 @@
 
 namespace hlbl {
 
-// One process's view of the solver: geometry (from tmLQCD_get_mpi_params/
-// tmLQCD_get_lat_params), the gauge field, and point-source inversions.
-//
-// Construction order matters and mirrors time_hlbl/time_invert.cpp: build
-// the Solver (tmLQCD/QUDA init + geometry), read_gauge(), then warm_up()
-// once before trusting the cost or the plaquette of anything else -- QUDA
-// loads the gauge into its own device-side representation lazily, on its
-// first solve, so plaquette() is meaningless before that.
+// Use in this order: construct, read_gauge(), warm_up(). QUDA loads the gauge
+// field on the first solve, so plaquette() is only valid after warm_up().
 class Solver {
  public:
   Solver(int argc, char** argv);
@@ -34,33 +26,22 @@ class Solver {
   const Lattice& lattice() const { return *lattice_; }
   int nconf() const { return nconf_; }
 
-  // Reads the configuration invert.input's GaugeConfigInputFile names, at
-  // the configuration number invert.input's InitialStoreCounter gives
-  // (both already parsed by tmLQCD_invert_init; nothing here reads a file
-  // path itself).
+  // Reads the gauge configuration named in invert.input.
   void read_gauge();
 
-  // A dummy point-source solve: where the QUDA gauge load and multigrid setup (or, for a
-  // plain CG operator, nothing extra) is paid for. Call once, before timing
-  // or trusting any other solve's cost, and before plaquette().
+  // Does one dummy solve. This is where QUDA loads the gauge field and sets
+  // up the multigrid, so call it once before any timed solve.
   void warm_up();
 
-  // QUDA's plaqQuda(): {mean, spatial, temporal} plaquette of the gauge it
-  // has loaded; mean == (spatial + temporal) / 2, and it is the number the
-  // gauge file's header records (checked on cB211a.072.64 #500: 0.554279822834
-  // to all 12 digits). Only meaningful after read_gauge() and at least one
-  // solve.
+  // {mean, spatial, temporal} plaquette of the gauge field QUDA holds. The
+  // mean should equal the value recorded in the gauge file.
   std::array<double, 3> plaquette() const;
 
-  // 12 point-source solves at the global site gsx, one per spin-colour
-  // component, for the given tmLQCD operator (0 or 1: the two operators
-  // invert.input defines, light +/-mu in production). Writes the 12 * 24 *
-  // local-volume doubles of the solutions into `dest` at `offset` -- the
-  // caller supplies a [2 flavours][12][24 * local volume] device buffer
-  // (hlbl::Contractor's fwd_src/fwd_y layout) and calls this once per
-  // flavour, offset = flavour * 12 * 24 * local volume (see
-  // sanity_check/check_pair.cpp). Returns the solver iterations, summed over
-  // the 12 solves.
+  // Solves for the 12 spin-colour components of a point source at global
+  // site gsx, with operator op_id (0: +mu, 1: -mu). The solutions
+  // (12 * 24 * local volume doubles) go into `dest` starting at `offset`.
+  // Call once per flavour, with offset = flavour * 12 * 24 * local volume.
+  // Returns the iterations summed over the 12 solves.
   int invert_point(const Vec4& gsx, int op_id, DeviceBuffer<double>& dest,
                     std::size_t offset);
 
@@ -69,8 +50,7 @@ class Solver {
   int nconf_ = 0;
 };
 
-// The tmLQCD/QUDA solves as a PropagatorProvider: both flavours of a point
-// source, into the [2][12][24 * local volume] block the driver's cache uses.
+// Solves both flavours of a point source into one propagator block.
 class SolverProvider : public PropagatorProvider {
  public:
   explicit SolverProvider(Solver& solver) : solver_(solver) {}

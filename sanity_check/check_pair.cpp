@@ -1,20 +1,12 @@
-// check_pair: inverts two point sources on a real gauge configuration
-// through tmLQCD/QUDA, contracts the one pair they form, and prints
-// kernel_sum per flavour.
-//
-// A manual sanity check, not a ctest case: it needs a real gauge
-// configuration and a working invert.input in the current directory (see
-// the cvc time_hlbl input templates), and a multigrid solve can take
-// minutes to set up. Options are tmLQCD's own (mpirun/srun -np N ...
-// check_pair, reading invert.input from cwd) plus:
+// check_pair: solves two point sources on a real gauge configuration with
+// tmLQCD/QUDA, contracts the pair they form, and prints kernel_sum for each
+// flavour. A manual check, not part of ctest: it needs a gauge configuration
+// and an invert.input in the working directory (see scripts/gen_invert_input.sh).
 //
 //   check_pair [n [plaquette]]
 //
-// n is the stride along the (1,1,1,1) direction (default 1): the pair is
-// (origin, origin + n*(1,1,1,1)), the same convention the hypercube
-// schedule uses. If plaquette is given (the value in the gauge file's
-// xlf-info record), the run fails unless QUDA's mean plaquette agrees to
-// 1e-9.
+// The pair is (origin, origin + n*(1,1,1,1)); n defaults to 1. If plaquette
+// is given, the run fails unless QUDA's mean plaquette agrees to 1e-9.
 
 #include <mpi.h>
 
@@ -34,9 +26,7 @@ using namespace hlbl;
 
 namespace {
 
-// [2 flavours][12 source components][24 * local volume] doubles: the
-// layout hlbl::Contractor expects, and what invert_point's two calls (one
-// per flavour) fill.
+// Solves both flavours into one block, in the layout the Contractor expects.
 DeviceBuffer<double> invert_pair(Solver& solver, const Vec4& gsx) {
   std::size_t const per_flavor = 12 * 24 * solver.lattice().volume();
   DeviceBuffer<double> d_block(2 * per_flavor);
@@ -72,13 +62,10 @@ int main(int argc, char** argv) {
     }
 
     solver.read_gauge();
-    solver.warm_up();  // pays for the QUDA gauge load / multigrid setup
+    solver.warm_up();  // QUDA gauge load and multigrid setup
 
-    // Which GPU each rank ended up on. QUDA picks the device on the first
-    // solve (from tmLQCD's node-local rank), so this must follow warm_up():
-    // before it, every rank still reports the default device 0. Repeated
-    // bus ids mean ranks share a GPU (a launcher restricting device
-    // visibility, or a node oversubscribed).
+    // Print which GPU each rank uses (QUDA picks it during warm_up). Each
+    // rank of a node should show a different PCI bus id.
     {
       int dev = -1;
       cudaGetDevice(&dev);

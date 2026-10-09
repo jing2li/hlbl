@@ -1,8 +1,7 @@
 #pragma once
 
-// The schedule loop: for each window, obtain the propagators of its new
-// sources (a solve), then contract every pair the schedule lists for it,
-// evicting a source from the cache as soon as its last pair is done.
+// The schedule loop. For each new source: solve it, contract it with its
+// partners, and free any propagator whose last pair is done.
 
 #include <cstddef>
 #include <vector>
@@ -18,28 +17,27 @@
 namespace hlbl {
 
 struct RunOptions {
-  // Windows [window_begin, window_end) of the schedule; window_end < 0 means
-  // through the last one. Starting after window 0 first re-solves the
-  // sources of earlier windows that the range's first pairs need.
+  // Run windows [window_begin, window_end); window_end < 0 means to the end.
+  // If window_begin > 0, the earlier sources it needs are solved again first.
   int window_begin = 0;
   int window_end = -1;
   PropagatorCache::Residency residency = PropagatorCache::Residency::kDevice;
   double xunit = hlbl::xunit();
-  bool verbose = false;  // one line per window on rank 0
+  bool verbose = false;  // print one line per window on rank 0
 };
 
 struct RunStats {
-  int positions_solved = 0;    // includes the re-solved ones of a restart
+  int positions_solved = 0;    // includes the ones re-solved at a restart
   long long iterations = 0;
   int pairs = 0;
-  int cache_peak = 0;          // source positions held at once
+  int cache_peak = 0;          // most source positions held at once
   double seconds_solve = 0;
   double seconds_kernel_sum = 0;
 };
 
 // Runs `schedule` (from build_schedule) and returns every pair's result,
-// identical on all ranks. `writer` and `timing` may be null (pass them on
-// rank 0 only); the writer gets each window's rows as soon as it is done.
+// the same on all ranks. `writer` and `timing` may be null; pass them on
+// rank 0 only. The writer gets each window's rows when the window is done.
 std::vector<PairResult> run_schedule(const Lattice& lattice,
                                       const Schedule& schedule,
                                       const RunOptions& options,
@@ -48,12 +46,12 @@ std::vector<PairResult> run_schedule(const Lattice& lattice,
                                       ResultWriter* writer, TimingLog* timing,
                                       RunStats* stats = nullptr);
 
-// What the run needs to hold in memory, against what this rank has. Device
-// residency keeps the schedule's peak number of source positions on the
-// GPU; host residency keeps them in pinned host memory, and puts three
-// blocks (a solve target and two staging slots) on the device.
+// Memory the run needs on this rank, against what is available.
+//   device cache: the peak number of positions on the GPU.
+//   host cache:   the peak number in pinned host memory, plus 3 blocks on the
+//                 GPU (one solve target, two staging slots).
 struct MemoryEstimate {
-  std::size_t bytes_per_position = 0;  // one position's block on this rank
+  std::size_t bytes_per_position = 0;  // one position, on this rank
   int peak_positions = 0;
   std::size_t device_needed = 0, device_available = 0;  // this rank
   std::size_t host_needed = 0, host_available = 0;      // this rank's share
@@ -62,9 +60,8 @@ struct MemoryEstimate {
   }
 };
 
-// Collective (it counts the ranks sharing this rank's node). Call after the
-// solver is set up: QUDA's multigrid takes most of the device memory, and
-// the free memory reported here is what it left.
+// Collective over all ranks. Call after the solver is set up, so the free
+// device memory is what is left after QUDA's multigrid.
 MemoryEstimate estimate_memory(const Lattice& lattice, const Schedule& schedule,
                                PropagatorCache::Residency residency);
 

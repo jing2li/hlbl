@@ -1,11 +1,9 @@
 // hlbl_hypercube: connected HLbL kernel sum on a sliding-hypercube schedule.
 //
-// Runs the schedule for one separation |y| = 2n: for each window, solves the
-// propagators of its new sources (tmLQCD/QUDA, or seeded noise with
-// --random-fields), contracts every pair the window closes, and appends the
-// results to an HDF5 file. --dry-run only builds the schedule and prints
-// propagator/pair counts and the peak cache size for both execution modes;
-// it needs no GPU, no tmLQCD and no gauge field.
+// For one separation |y| = 2n it solves the propagators (tmLQCD/QUDA, or
+// random numbers with --random-fields), contracts every pair and writes the
+// results to an HDF5 file. --dry-run only prints the schedule's counts and
+// cache peak; it needs no GPU and no gauge field.
 
 #include <mpi.h>
 
@@ -113,12 +111,10 @@ void print_vec4(const hlbl::Vec4& v) {
   std::printf("(%d,%d,%d,%d)", v[0], v[1], v[2], v[3]);
 }
 
-// Emits, on top of a human-readable report:
-//   mode=<serial|pipelined> n_propagators=.. n_solves=.. n_pairs=.. n_kernel_sums=.. peak_cache=..
-//   edge (a,b,c,d) (e,f,g,h)
-// one line per mode and (if --show-window is given) per pair in that
-// window, in a fixed, sorted format. scripts/compare_schedule.sh greps
-// exactly these lines out to diff against the Python reference.
+// Prints a report plus two kinds of lines that scripts/compare_schedule.sh
+// compares with the Python reference:
+//   mode=<name> n_propagators=.. n_solves=.. n_pairs=.. n_kernel_sums=.. peak_cache=..
+//   edge (a,b,c,d) (e,f,g,h)       one per pair of the window given by --show-window
 void run_dry_run(const Options& o) {
   for (int i = 0; i < 4; ++i) {
     if (o.direction[i] != 1 && o.direction[i] != -1) {
@@ -147,12 +143,15 @@ void run_dry_run(const Options& o) {
   // Mode summary lines first, edges (if requested) last -- matching the
   // order scripts/compare_schedule.sh's Python side prints them in, so the
   // two can be diffed directly.
-  for (auto mode : {hlbl::Mode::kSerial, hlbl::Mode::kPipelined}) {
+  for (auto mode : {hlbl::Mode::kSerial, hlbl::Mode::kPipelined,
+                    hlbl::Mode::kInterleaved}) {
     auto stats = hlbl::simulate(schedule, o.flavors, mode);
     std::printf(
         "mode=%s n_propagators=%lld n_solves=%lld n_pairs=%lld "
         "n_kernel_sums=%lld peak_cache=%d\n",
-        mode == hlbl::Mode::kSerial ? "serial" : "pipelined",
+        mode == hlbl::Mode::kSerial
+            ? "serial"
+            : (mode == hlbl::Mode::kPipelined ? "pipelined" : "interleaved"),
         stats.n_propagators, stats.n_solves, stats.n_pairs,
         stats.n_kernel_sums, stats.peak_cache);
   }
@@ -190,9 +189,8 @@ void run_dry_run(const Options& o) {
 
 double gib(std::size_t bytes) { return bytes / 1073741824.0; }
 
-// Everything after the geometry is known: schedule, memory check, KQED,
-// the loop, the summary. Collective; any failure aborts the whole job rather
-// than leaving the other ranks waiting in a collective.
+// Builds the schedule, checks memory, runs the loop and prints a summary.
+// Collective; a failure aborts the whole job.
 void run(const Options& o, const hlbl::Lattice& lattice, int nconf,
          hlbl::PropagatorProvider& provider) {
   int rank = 0;
@@ -327,7 +325,7 @@ int main(int argc, char** argv) {
 
   int status = 0;
   if (o.dry_run) {
-    // rank 0 only: no GPU, no solver, no gauge field
+    // rank 0 only
     if (rank == 0) {
       try {
         run_dry_run(o);
@@ -343,8 +341,7 @@ int main(int argc, char** argv) {
 
   try {
     if (o.random_fields) {
-      // structureless noise on a lattice given explicitly: exercises the
-      // schedule, cache and output with no solver and no gauge field
+      // random numbers on a lattice given on the command line
       hlbl::Vec4 local;
       for (int i = 0; i < 4; ++i) {
         if (o.lattice[i] % o.procs[i] != 0) {
@@ -357,8 +354,8 @@ int main(int argc, char** argv) {
       run(o, lattice, /*nconf=*/-1, provider);
     } else {
 #ifdef HLBL_HAVE_SOLVER
-      // geometry, gauge field and operators all come from invert.input in the
-      // working directory; tmLQCD's own argument parsing gets no options
+      // geometry, gauge field and operators come from invert.input in the
+      // working directory
       int stub_argc = 1;
       hlbl::Solver solver(stub_argc, argv);
       solver.read_gauge();

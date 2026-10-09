@@ -11,7 +11,8 @@ nothing; what the script produces is
   * the schedule itself (which propagators, which pairs, in which order),
   * a check that the schedule finds every |y| = 2n pair among its sources,
   * the number of inversions and kernel-sum calls   -> node hours,
-  * the peak propagator-cache size                  -> memory.
+  * the peak propagator-cache size, and with the solver and contraction
+    reserve the GPU memory per rank                 -> memory.
 
 The scheme
 ----------
@@ -43,6 +44,9 @@ Execution modes (they differ only in when propagators are held)
                (e.g. solver and contraction on different resources), so the
                next window's propagators are already in the cache. Three
                windows are live, 45 propagators.
+  interleaved  each source is contracted with its partners right after its
+               own solve, in the order of Step.sources. 16 propagators at the
+               peak (steady state). This is what the driver does.
 
 In every mode a propagator is evicted as soon as its last pair is done.
 
@@ -55,6 +59,23 @@ at x needs both propagators at x. The solver still works on the full volume,
 but each of the 12 solutions can be sparsened as soon as it is done, so the
 only full-volume fields are the solver's own. The kernel-sum time also
 changes with F, so time it with the same sparsening.
+
+Memory model (per rank, GiB)
+----------------------------
+    peak positions x size of one position + QUDA solver overhead <= GPU memory
+
+  cache        peak source positions x 4608 B (2 flavours x 12 x 24 doubles)
+               x local sites
+  solver       QUDA's peak device allocation of the production multigrid solver
+               (time_hlbl/input/invert.input.in), measured with time_invert at
+               8/16/32/64 nodes (QUDA_DEV_GIB, from strong-invert/memory.txt).
+               Only those node counts have data; other rows print "no data".
+               --solver-gb replaces the measurement with one number.
+
+  Not modelled: the CUDA context, cuBLAS/MPI buffers and the driver's stack
+  reservation of the contraction kernel (about 10 GiB per rank for the 4-point
+  kernel of cuda_lattice.cu). QUDA's counters do not show them; --reserve-gb
+  adds a flat amount for them.
 
 Usage (Python >= 3.8; the system python3 on the login node is 3.6)
 -----------------------------------------------------------------
@@ -74,7 +95,14 @@ SIGN_VECTORS = tuple(itertools.product((-1, 1), repeat=4))
 ZERO = (0, 0, 0, 0)
 N_SPIN_COLOR = 12          # point-source components per flavor
 GB = 1024.0 ** 3
-MODES = ("serial", "pipelined")
+MODES = ("serial", "pipelined", "interleaved")
+
+# QUDA's peak device allocation per rank (GiB) with the production multigrid
+# solver on cB211a.072.64 (128x64^3), 4 ranks per node, rank 0 high-water mark from
+# strong-invert/memory.txt: (local sites, GiB) at 8, 16, 32, 64 nodes.
+QUDA_DEV_GIB = ((1048576, 11.38), (524288, 5.89), (262144, 3.04), (131072, 1.56))
+
+GPU_MEM_GB = 95.6         # nvidia-smi memory.total of a GH200: 97871 MiB
 
 
 # =====================================================================
@@ -277,6 +305,13 @@ def run(steps, lattice, n_flavors, mode):
         cache.pair_done(older, newer)
 
     for k, step in enumerate(steps):
+        if mode == "interleaved":
+            for src in step.sources:
+                invert(src.position)
+                for q in src.partners:
+                    contract(q, src.position)
+            stats.per_step.append((k, step.n_new, step.n_pairs, len(cache.props)))
+            continue
         if mode == "serial" or k == 0:
             for src in step.sources:
                 invert(src.position)
@@ -344,30 +379,49 @@ def find_process_grid(lattice, ranks, local_multiple):
     return None if best is None else best[1]
 
 
+def quda_dev_gb(local_sites, points=QUDA_DEV_GIB):
+    """Measured QUDA peak device allocation per rank [GiB] at exactly this local
+    volume, or None if there is no measurement."""
+    for sites, gib in points:
+        if sites == local_sites:
+            return gib
+    return None
+
+
 def memory_report(stats_by_mode, lattice, procs, n_flavors, precision, sparsen,
                   gpu_mem_gb, host_mem_gb, gpus_per_node, cache_limit,
-                  nodes_scan, local_multiple):
+                  nodes_scan, local_multiple, solver_gb=None, reserve_gb=0.0):
     volume = math.prod(lattice)
     bytes_complex = 16 if precision == "double" else 8
     kept_sites = volume / sparsen
     per_flavor = N_SPIN_COLOR * N_SPIN_COLOR * bytes_complex * kept_sites
     per_position = n_flavors * per_flavor
 
-    def fit(per_rank):
-        if per_rank <= gpu_mem_gb * GB:
+    def fit(cache, block, res):
+        """GPU: cache + reserve on the device. host: cache in pinned host memory,
+        the device holds the reserve and three blocks (two staging slots and a
+        solve target). -: neither."""
+        if cache + res <= gpu_mem_gb * GB:
             return "GPU"
-        return "host" if per_rank <= host_mem_gb * GB else "-"
+        if block * 3 + res <= gpu_mem_gb * GB and cache <= host_mem_gb * GB:
+            return "host"
+        return "-"
 
     print("\n" + "=" * 78)
-    print("MEMORY (propagator cache only)")
+    print("MEMORY  (peak positions x position size + QUDA solver)")
     print("=" * 78)
     print(f"lattice {tuple(lattice)} = {volume:,} sites, {precision} precision")
     if sparsen > 1:
         print(f"sparsened: 1 site in {sparsen:g} kept -> {kept_sites:,.0f} sites per propagator")
     print(f"one flavor propagator  12x12 x {bytes_complex} B x sites = {per_flavor / GB:10.2f} GB")
     print(f"one source position    x {n_flavors} flavors            = {per_position / GB:10.2f} GB")
-    print(f"budget per rank: {gpu_mem_gb:g} GB GPU, {host_mem_gb:g} GB host "
-          f"(solver and contraction workspace NOT included)")
+    print(f"budget per rank: {gpu_mem_gb:g} GB GPU, {host_mem_gb:g} GB host")
+    if solver_gb is None:
+        print("solver: QUDA peak measured with time_invert (8/16/32/64 nodes, 128x64^3)")
+    else:
+        print(f"solver: {solver_gb:g} GB (--solver-gb)")
+    if reserve_gb:
+        print(f"plus {reserve_gb:g} GB flat reserve (--reserve-gb)")
     print()
     print(f"  {'mode':<12} {'positions':>9} {'flavor-props':>12} {'total GB':>10} {'<= limit':>8}")
     for mode, st in stats_by_mode.items():
@@ -377,25 +431,35 @@ def memory_report(stats_by_mode, lattice, procs, n_flavors, precision, sparsen,
     print(f"  'positions' = source points held at once (all flavors each);")
     print(f"  '<= limit' compares positions with --cache-limit {cache_limit}.")
 
-    print(f"\n  GB per rank by node count ({gpus_per_node} GPUs = ranks per node); "
-          f"GPU / host = fits there, - = fits neither")
+    print(f"\n  GB per rank by node count ({gpus_per_node} GPUs = ranks per node): "
+          f"cache, and cache + solver = total")
+    print(f"  fits: GPU = everything on the device, host = cache in pinned host memory "
+          f"(device keeps solver + 3 blocks), - = neither")
     print(f"  grid: local extents multiples of T {local_multiple[0]}, "
           f"X/Y/Z {local_multiple[1]} (--local-multiple)")
-    header = f"  {'nodes':>5} {'ranks':>5}  {'grid':<14}"
+    header = f"  {'nodes':>5} {'ranks':>5}  {'grid':<10} {'solver':>7}"
     for mode in stats_by_mode:
-        header += f" {mode:>11} {'fits':>4}"
+        header += f"  {mode:>9}: {'cache':>6} {'total':>6} {'fits':>4}"
     print(header)
     rows = sorted(set(nodes_scan) | {math.prod(procs) // gpus_per_node})
     for nodes in rows:
         ranks = nodes * gpus_per_node
         grid = find_process_grid(lattice, ranks, local_multiple)
-        line = f"  {nodes:>5} {ranks:>5}  {'none' if grid is None else 'x'.join(map(str, grid)):<14}"
+        solver = solver_gb if solver_gb is not None else quda_dev_gb(volume // ranks)
+        grid_s = "none" if grid is None else "x".join(map(str, grid))
+        if solver is None:
+            print(f"  {nodes:>5} {ranks:>5}  {grid_s:<10} {'no data':>7}")
+            continue
+        res_b = (solver + reserve_gb) * GB
+        line = f"  {nodes:>5} {ranks:>5}  {grid_s:<10} {solver:>7.2f}"
         for st in stats_by_mode.values():
-            per_rank = st.peak_cache * per_position / ranks
-            line += f" {per_rank / GB:>10.1f} {fit(per_rank):>5}"
+            cache = st.peak_cache * per_position / ranks
+            # no process grid -> the solver cannot run there, whatever the memory says
+            verdict = "-" if grid is None else fit(cache, per_position / ranks, res_b)
+            line += f"  {'':>9}  {cache / GB:>6.1f} {(cache + res_b) / GB:>6.1f} {verdict:>4}"
         print(line)
-    print("  'none': no process grid of that size fits the lattice and the MG blocking;")
-    print("  the cache could still be spread over those nodes, the solver could not.")
+    print("  'none': no process grid of that size fits the lattice and the MG blocking.")
+    print("  'no data': QUDA was not measured at this local volume.")
 
 
 def cost_report(stats, chains, configs, procs, gpus_per_node,
@@ -450,7 +514,7 @@ def main():
     g.add_argument("--origin", type=int, nargs=4, default=[0, 0, 0, 0], metavar=("T", "X", "Y", "Z"))
     g.add_argument("--flavors", type=int, default=2, choices=(1, 2),
                    help="flavors inverted per position, and kernel-sum calls per pair")
-    g.add_argument("--mode", choices=MODES, default="serial",
+    g.add_argument("--mode", choices=MODES, default="interleaved",
                    help="execution order used for the per-step table")
 
     g = p.add_argument_group("lattice and machine")
@@ -459,7 +523,8 @@ def main():
     g.add_argument("--procs", type=int, nargs=4, default=[2, 2, 2, 2],
                    metavar=("PT", "PX", "PY", "PZ"), help="MPI grid, one GPU per rank")
     g.add_argument("--gpus-per-node", type=int, default=4)
-    g.add_argument("--gpu-mem-gb", type=float, default=96.0, help="per GPU (GH200 H100)")
+    g.add_argument("--gpu-mem-gb", type=float, default=GPU_MEM_GB,
+                   help="per GPU, as nvidia-smi memory.total (GH200: 97871 MiB)")
     g.add_argument("--host-mem-gb", type=float, default=120.0, help="per rank (GH200 Grace)")
     g.add_argument("--precision", choices=("double", "single"), default="double",
                    help="storage precision of cached propagators")
@@ -467,11 +532,17 @@ def main():
                    help="max source positions the cache may hold")
     g.add_argument("--sparsen", type=float, default=1.0,
                    help="keep 1 site in this many in every cached propagator (e.g. 64)")
-    g.add_argument("--nodes-scan", type=int, nargs="*", default=[4, 8, 10, 16, 32],
+    g.add_argument("--nodes-scan", type=int, nargs="*", default=[8, 16, 32, 64],
                    help="node counts for the GB-per-rank table")
     g.add_argument("--local-multiple", type=int, nargs=2, default=[32, 16], metavar=("T", "XYZ"),
                    help="local extents must be multiples of these (production MG blocking); "
                         "1 1 to disable")
+
+    g = p.add_argument_group("solver memory beside the cache (per rank, see 'Memory model')")
+    g.add_argument("--solver-gb", type=float, default=None,
+                   help="QUDA's peak allocation per rank; default: measured values per node count")
+    g.add_argument("--reserve-gb", type=float, default=0.0,
+                   help="flat extra per rank (CUDA context, kernel stack reservation, ...)")
 
     g = p.add_argument_group("cost (seconds, from time_hlbl at the same --procs)")
     g.add_argument("--t-invert", type=float, default=None,
@@ -535,7 +606,7 @@ def main():
 
     memory_report(stats_by_mode, lattice, args.procs, args.flavors, args.precision, args.sparsen,
                   args.gpu_mem_gb, args.host_mem_gb, args.gpus_per_node, args.cache_limit,
-                  args.nodes_scan, tuple(args.local_multiple))
+                  args.nodes_scan, tuple(args.local_multiple), args.solver_gb, args.reserve_gb)
     cost_report(reference, args.chains, args.configs, args.procs, args.gpus_per_node,
                 args.t_invert, args.t_kernel_sum, args.t_setup)
 

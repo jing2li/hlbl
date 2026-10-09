@@ -1,23 +1,21 @@
 #pragma once
 
-// The propagators of the source positions the schedule currently needs.
+// The propagators of the sources the schedule still needs.
 //
-// A position is inserted once (its solve), taken part in some number of
-// pair contractions, and evicted as soon as the last of them is done. That
-// number is known up front from the schedule, so the cache is told it at
-// construction (`pending`) and needs no eviction policy of its own.
+// A position is inserted once (after its solve) and freed when the last pair
+// that uses it is done. The number of pairs per position is known from the
+// schedule and given to the constructor (`pending`).
 //
-// Two residencies:
-//   kDevice  every cached block lives on the GPU. Contractions read it in
-//            place. Fastest, and the cache is limited by device memory.
-//   kHost    blocks live in pinned host memory. A contraction stages the
-//            two blocks it needs into device buffers first (one per
-//            slot); the device only ever holds those two blocks, plus a
-//            third used as the target of a solve.
+// Where the blocks live:
+//   kDevice  on the GPU; contractions read them in place.
+//   kHost    in pinned host memory. A contraction first copies the two blocks
+//            it needs into two device staging slots. A third device block is
+//            the target of the solve.
 
 #include <cstddef>
 #include <map>
 #include <optional>
+#include <vector>
 
 #include "hlbl/mdarray.hpp"
 #include "hlbl/vec4.hpp"
@@ -28,25 +26,22 @@ class PropagatorCache {
  public:
   enum class Residency { kDevice, kHost };
 
-  // block_len: doubles per position (hlbl::block_length()). pending: for
-  // every position, the number of pair contractions it takes part in.
+  // block_len: doubles per position (see block_length()).
+  // pending: for each position, the number of pairs it takes part in.
   PropagatorCache(Residency residency, std::size_t block_len,
                   std::map<Vec4, int> pending);
 
-  // Inserting a position is two steps so that a solve can write straight
-  // into the device block the cache will keep (kDevice) or stage through
-  // (kHost): fill the returned buffer, then commit it.
+  // Insert in two steps: begin_insert returns a device buffer, the solve
+  // fills it, end_insert stores it.
   DeviceBuffer<double>& begin_insert(const Vec4& position);
   void end_insert(const Vec4& position);
 
-  // The position's block on the device. kDevice: the cached block itself.
-  // kHost: staged into slot 0 or 1, unless that slot already holds it. The
-  // pointer stays valid until the next call with the same slot (or, for
-  // kDevice, until the position is evicted).
+  // The position's block on the device. For kHost it is copied into staging
+  // slot 0 or 1 (skipped if the slot already holds it); the pointer is valid
+  // until the next call with the same slot.
   const double* device_ptr(const Vec4& position, int slot);
 
-  // One contraction involving both positions is done; evicts either whose
-  // last contraction this was.
+  // A pair is done; frees either position if this was its last pair.
   void pair_done(const Vec4& older, const Vec4& newer);
 
   bool contains(const Vec4& position) const;
@@ -68,7 +63,11 @@ class PropagatorCache {
   std::map<Vec4, Entry> entries_;
   int peak_ = 0;
 
-  // kHost only, allocated on first use
+  // kHost only: freed pinned blocks are kept and reused, because
+  // cudaMallocHost is slow.
+  std::vector<PinnedBuffer<double>> pool_;
+
+  // kHost only: allocated on first use
   DeviceBuffer<double> scratch_;
   DeviceBuffer<double> staging_[2];
   std::optional<Vec4> staged_[2];

@@ -1,6 +1,5 @@
-// Structural checks on the gamma tables: each row is a genuine permutation
-// with +-1 signs, gamma_mu^2 = gamma_5^2 = 1 (Euclidean signature), and
-// {gamma_mu, gamma_nu} = 0 for mu != nu, including gamma_5.
+// Checks the gamma tables: each row is a permutation with signs +-1,
+// gamma_mu^2 = gamma_5^2 = 1, and different gammas anticommute.
 
 #include "hlbl/gamma.hpp"
 

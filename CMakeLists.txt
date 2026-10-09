@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-# must precede project(), which otherwise sets the compiler's default
+# must come before project()
 set(CMAKE_CUDA_ARCHITECTURES 90 CACHE STRING "CUDA architectures (90 = GH200)")
 
 project(hlbl
@@ -26,23 +26,12 @@ find_package(HDF5 REQUIRED COMPONENTS C)
 add_subdirectory(deps/kqed)
 
 # ---------------------------------------------------------------------------
-# Vendored production kernels (see kernels/VENDORED.md), as an OBJECT
-# library rather than a STATIC one.
+# GPU kernels from cvc (see kernels/VENDORED.md).
 #
-# cuda_lattice.cu calls device functions defined in KQED_cuda's own
-# relocatable device code, so at the final executable's device-link step
-# nvlink must see both. nvlink does not reliably extract device code across
-# two cross-referencing STATIC archives -- it silently drops it, leaving
-# __cudaRegisterLinkedBinary_* undefined at the host link, and only once
-# something actually pulls the affected archive member in. An OBJECT
-# library sidesteps this: its .o files are added directly to whichever
-# executable links it, never archived, so nvlink again sees exactly what
-# cvc's own time_hlbl/CMakeLists.txt sees for the same kernels: plain
-# object files plus the one self-contained device archive, KQED_cuda.
-#
-# Must be linked directly by each final executable (see hlbl_executable()),
-# never through an intermediate STATIC library -- that would recreate the
-# same archive-in-archive problem one level up.
+# This must be an OBJECT library, not STATIC. The kernels call device code in
+# KQED_cuda, and nvlink can lose device code that is split over two static
+# archives, which shows up as undefined __cudaRegisterLinkedBinary_* symbols.
+# Every executable links this library directly (see hlbl_executable()).
 # ---------------------------------------------------------------------------
 add_library(hlbl_kernels_obj OBJECT
   kernels/cuda_lattice.cu
@@ -55,15 +44,8 @@ set_target_properties(hlbl_kernels_obj PROPERTIES
   POSITION_INDEPENDENT_CODE ON)
 
 # ---------------------------------------------------------------------------
-# hlbl_core: lattice geometry, gamma tables, the hypercube schedule, and the
-# connected contraction. contract.cpp calls the vendored kernels but
-# contains no device code of its own, so this stays a plain host archive --
-# see hlbl_kernels_obj above for why it must NOT also embed that OBJECT
-# library.
-#
-# Needs CUDA, MPI, KQED (for cuda_lattice.h/contract.cpp) and HDF5 (once
-# output.cpp is added), but not tmLQCD -- unlike hlbl_solver, none of it
-# needs a gauge field or a real solver.
+# hlbl_core: geometry, gamma tables, schedule, contraction, cache, output and
+# the driver loop. Needs CUDA, MPI, KQED and HDF5, but not tmLQCD.
 # ---------------------------------------------------------------------------
 add_library(hlbl_core STATIC
   src/gamma.cpp
@@ -77,8 +59,8 @@ add_library(hlbl_core STATIC
 target_include_directories(hlbl_core PUBLIC include)
 target_link_libraries(hlbl_core PUBLIC hlbl_kernels_obj HDF5::HDF5)
 
-# The revision of this tree, recorded in every result file. Taken when CMake
-# configures, so re-run cmake after committing to refresh it.
+# Git revision, stored in every result file. Re-run cmake after committing to
+# update it.
 execute_process(
   COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} describe --always --dirty --abbrev=12
   OUTPUT_VARIABLE HLBL_GIT_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -90,9 +72,7 @@ set_source_files_properties(src/output.cpp PROPERTIES
   COMPILE_DEFINITIONS HLBL_GIT_REVISION="${HLBL_GIT_REVISION}")
 
 # ---------------------------------------------------------------------------
-# hlbl_solver: the tmLQCD/QUDA interface (gauge read, plaquette, point-source
-# solves). Needs tmLQCD, which brings QUDA, lemon and c-lime; nothing here
-# is needed by hlbl_core or the tests that don't solve.
+# hlbl_solver: the tmLQCD/QUDA interface. Needs tmLQCD (which brings QUDA).
 # ---------------------------------------------------------------------------
 if (HLBL_WITH_TMLQCD)
   # tmLQCDConfig.cmake calls find_dependency() without including this
@@ -104,11 +84,7 @@ if (HLBL_WITH_TMLQCD)
 endif()
 
 # ---------------------------------------------------------------------------
-# Executables. Every one links hlbl_kernels_obj directly (not only via
-# hlbl_core) so its .o files are added to the link rather than archived --
-# harmless if hlbl_core already pulls it in publicly, but explicit here
-# because that propagation is exactly the property the comment above says
-# not to rely on for a STATIC consumer.
+# Executables
 # ---------------------------------------------------------------------------
 function(hlbl_executable name)
   add_executable(${name} ${ARGN})
@@ -135,9 +111,7 @@ hlbl_test(test_lattice)
 hlbl_test(test_contract_random)
 hlbl_test(test_driver_random)
 
-# check_pair needs a real gauge configuration and a solve that can take
-# minutes to set up, so it is a manual tool (see its own top-of-file
-# comment), not a ctest case.
+# check_pair needs a real gauge configuration, so it is not a ctest case.
 if (HLBL_WITH_TMLQCD)
   add_executable(check_pair sanity_check/check_pair.cpp)
   target_link_libraries(check_pair PRIVATE hlbl_solver hlbl_kernels_obj)
@@ -146,8 +120,7 @@ if (HLBL_WITH_TMLQCD)
     CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 
-# the whole binary on random fields: argument parsing, memory estimate, run,
-# HDF5 and timing files (K = 1 shift: 15 + 65 = 80 pairs)
+# The whole program on random fields (1 shift: 15 + 65 = 80 pairs)
 add_test(NAME hypercube_random_fields
   COMMAND hlbl_hypercube --random-fields --lattice 6 6 6 6 --stride 1 --steps 1
           --out hypercube_random_fields.h5)

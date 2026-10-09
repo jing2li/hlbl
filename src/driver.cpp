@@ -31,8 +31,8 @@ std::vector<PairResult> run_schedule(const Lattice& lattice,
   Vec4 const global = lattice.global();
   auto wrap = [&](const Vec4& p) { return mod_pos(p, global); };
 
-  // how many contractions each position takes part in, over this range only,
-  // and which positions the range needs from before it
+  // Pairs per position within this range, and the positions from before the
+  // range that its pairs need (solved again first)
   std::map<Vec4, int> pending;
   std::set<Vec4> produced;
   for (int k = begin; k < end; ++k) {
@@ -78,13 +78,14 @@ std::vector<PairResult> run_schedule(const Lattice& lattice,
   for (const Vec4& position : preload) solve(begin - 1, position);
 
   for (int k = begin; k < end; ++k) {
-    for (const Source& src : schedule[k].sources) solve(k, src.position);
-
     std::vector<PairResult> rows;
+    // Contract each source right after its solve, so propagators are freed
+    // early and the cache stays small.
     for (const Source& src : schedule[k].sources) {
+      solve(k, src.position);
       if (src.partners.empty()) continue;
       Vec4 const gy = wrap(src.position);
-      // p is the pair's second source: fwd_y, staged once for all its partners
+      // the new source is the pair's y; it stays staged for all its partners
       const double* d_y = cache.device_ptr(src.position, 0);
       for (const Vec4& q : src.partners) {
         const double* d_x = cache.device_ptr(q, 1);
@@ -128,7 +129,7 @@ std::vector<PairResult> run_schedule(const Lattice& lattice,
 
 namespace {
 
-// MemAvailable of this node, bytes; 0 if it cannot be read
+// Free memory of this node in bytes (0 if /proc/meminfo cannot be read)
 std::size_t node_memory_available() {
   std::ifstream in("/proc/meminfo");
   std::string line;
@@ -149,7 +150,7 @@ MemoryEstimate estimate_memory(const Lattice& lattice, const Schedule& schedule,
                                PropagatorCache::Residency residency) {
   MemoryEstimate e;
   e.bytes_per_position = block_length(lattice) * sizeof(double);
-  e.peak_positions = simulate(schedule, 2, Mode::kSerial).peak_cache;
+  e.peak_positions = simulate(schedule, 2, Mode::kInterleaved).peak_cache;
 
   std::size_t free_dev = 0, total_dev = 0;
   check_cuda(cudaMemGetInfo(&free_dev, &total_dev), "cudaMemGetInfo");
