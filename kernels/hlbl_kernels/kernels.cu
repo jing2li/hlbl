@@ -215,10 +215,10 @@ __host__ inline static int get_max(unsigned T_global, unsigned LX_global, unsign
     return Lmax;
 }
 
-__device__ inline static int prop_idx(int iflavour, int ia, int x, int ib, unsigned VOL) {
-    return iflavour * 12 * 24 * VOL
-         + ia * 24 * VOL
-         + x * 24 + ib;
+__device__ inline static size_t prop_idx(int iflavour, int ia, int x, int ib, unsigned VOL) {
+    return (size_t)iflavour * 12 * 24 * VOL
+         + (size_t)ia * 24 * VOL
+         + (size_t)x * 24 + ib;
 }
 
 __device__ inline void site_map (int xv[4], int const x[4], unsigned T_global, unsigned LX_global, unsigned LY_global, unsigned LZ_global)

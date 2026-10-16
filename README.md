@@ -239,6 +239,5 @@ sbatch -A <account> -p <partition> --export=ALL,HLBL_BIN=/path/to/build/check_pa
 
 - Keep each cached propagator on a random subset of sites only (needs kernels
   that loop over a site list, and a check of the statistical error).
-- Solve window k+1 while window k is contracted (peak cache: 45 positions).
 - The 2+2 contribution. The kernels are compiled, but it needs ordered pairs.
 - Several chains or directions per job, and restart from inside a window.
