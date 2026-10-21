@@ -70,6 +70,30 @@ void attr_ints(hid_t file, const char* name, const int* v, hsize_t n) {
 }
 void attr_int(hid_t file, const char* name, int v) { attr_ints(file, name, &v, 1); }
 
+void attr_double(hid_t file, const char* name, double v) {
+  hid_t space = check_id(H5Screate(H5S_SCALAR), "attr space");
+  hid_t a = check_id(
+      H5Acreate2(file, name, H5T_NATIVE_DOUBLE, space, H5P_DEFAULT, H5P_DEFAULT),
+      "create attribute");
+  check(H5Awrite(a, H5T_NATIVE_DOUBLE, &v), "write attribute");
+  H5Aclose(a);
+  H5Sclose(space);
+}
+
+// a small dataset [rows][cols] of ints, written at once
+void int_table(hid_t file, const char* name, const std::vector<int>& data,
+               hsize_t rows, hsize_t cols) {
+  hsize_t dims[2] = {rows, cols};
+  hid_t space = check_id(H5Screate_simple(2, dims, nullptr), "table space");
+  hid_t ds = check_id(H5Dcreate2(file, name, H5T_NATIVE_INT, space, H5P_DEFAULT,
+                                 H5P_DEFAULT, H5P_DEFAULT),
+                      "create table");
+  check(H5Dwrite(ds, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT, data.data()),
+        "write table");
+  H5Dclose(ds);
+  H5Sclose(space);
+}
+
 void attr_string(hid_t file, const char* name, const std::string& s) {
   hid_t type = H5Tcopy(H5T_C_S1);
   H5Tset_size(type, s.size() + 1);
@@ -86,6 +110,7 @@ void attr_string(hid_t file, const char* name, const std::string& s) {
 }  // namespace
 
 ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
+  if (info.chains.empty()) throw std::runtime_error("hlbl::ResultWriter: no chains");
   hid_t file = check_id(
       H5Fcreate(path.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT),
       "create file");
@@ -93,17 +118,37 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
   ds_x_ = make_dataset(file, "x", H5T_NATIVE_INT, 4);
   ds_y_ = make_dataset(file, "y", H5T_NATIVE_INT, 4);
   ds_yv_ = make_dataset(file, "yv", H5T_NATIVE_INT, 4);
+  ds_chain_ = make_dataset(file, "chain", H5T_NATIVE_INT, 0);
   ds_window_ = make_dataset(file, "window", H5T_NATIVE_INT, 0);
   ds_kernel_ = make_dataset(file, "kernel_sum", H5T_NATIVE_DOUBLE, 2);
 
+  constexpr hsize_t kChainCols = 12;
+  std::vector<int> table;
+  for (const Chain& c : info.chains) {
+    table.insert(table.end(), c.start.begin(), c.start.end());
+    table.insert(table.end(), c.direction.begin(), c.direction.end());
+    for (int v : {c.stride, c.steps, c.window_begin, c.window_end}) table.push_back(v);
+  }
+  int_table(file, "chains", table, info.chains.size(), kChainCols);
+  attr_string(file, "chains_columns",
+              "start0..3, dir0..3, stride, steps, window_begin, window_end; "
+              "row = chain index");
+
   attr_ints(file, "lattice", info.lattice.data(), 4);
   attr_ints(file, "procs", info.procs.data(), 4);
-  attr_ints(file, "direction", info.direction.data(), 4);
-  attr_ints(file, "origin", info.origin.data(), 4);
-  attr_int(file, "stride", info.stride);
   attr_int(file, "nconf", info.nconf);
-  attr_int(file, "window_begin", info.window_begin);
-  attr_int(file, "window_end", info.window_end);
+  attr_double(file, "muon_mass_MeV", info.muon_mass);
+  attr_double(file, "lattice_spacing_fm", info.lattice_spacing);
+  attr_double(file, "xunit", info.xunit);
+  if (info.chains.size() == 1) {
+    // as in files from before chain lists
+    const Chain& c = info.chains[0];
+    attr_ints(file, "direction", c.direction.data(), 4);
+    attr_ints(file, "origin", c.start.data(), 4);
+    attr_int(file, "stride", c.stride);
+    attr_int(file, "window_begin", c.window_begin);
+    attr_int(file, "window_end", c.window_end);
+  }
   attr_string(file, "kernel", info.kernel);
   attr_string(file, "hlbl_revision", HLBL_GIT_REVISION);
   attr_string(file, "flavour_order", "kernel_sum[:,0] = operator 0, [:,1] = operator 1");
@@ -111,7 +156,7 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
 }
 
 ResultWriter::~ResultWriter() {
-  for (long long id : {ds_x_, ds_y_, ds_yv_, ds_window_, ds_kernel_}) {
+  for (long long id : {ds_x_, ds_y_, ds_yv_, ds_chain_, ds_window_, ds_kernel_}) {
     if (id >= 0) H5Dclose(static_cast<hid_t>(id));
   }
   if (file_ >= 0) H5Fclose(static_cast<hid_t>(file_));
@@ -120,7 +165,7 @@ ResultWriter::~ResultWriter() {
 void ResultWriter::append(const std::vector<PairResult>& rows) {
   if (rows.empty()) return;
   std::size_t const n = rows.size();
-  std::vector<int> x(4 * n), y(4 * n), yv(4 * n), window(n);
+  std::vector<int> x(4 * n), y(4 * n), yv(4 * n), chain(n), window(n);
   std::vector<double> kernel(2 * n);
   for (std::size_t i = 0; i < n; ++i) {
     for (int k = 0; k < 4; ++k) {
@@ -128,6 +173,7 @@ void ResultWriter::append(const std::vector<PairResult>& rows) {
       y[4 * i + k] = rows[i].y[k];
       yv[4 * i + k] = rows[i].yv[k];
     }
+    chain[i] = rows[i].chain;
     window[i] = rows[i].window;
     kernel[2 * i] = rows[i].kernel_sum[0];
     kernel[2 * i + 1] = rows[i].kernel_sum[1];
@@ -136,6 +182,8 @@ void ResultWriter::append(const std::vector<PairResult>& rows) {
   append_rows(static_cast<hid_t>(ds_x_), H5T_NATIVE_INT, x.data(), first, n, 4);
   append_rows(static_cast<hid_t>(ds_y_), H5T_NATIVE_INT, y.data(), first, n, 4);
   append_rows(static_cast<hid_t>(ds_yv_), H5T_NATIVE_INT, yv.data(), first, n, 4);
+  append_rows(static_cast<hid_t>(ds_chain_), H5T_NATIVE_INT, chain.data(), first,
+              n, 0);
   append_rows(static_cast<hid_t>(ds_window_), H5T_NATIVE_INT, window.data(),
               first, n, 0);
   append_rows(static_cast<hid_t>(ds_kernel_), H5T_NATIVE_DOUBLE, kernel.data(),
@@ -147,7 +195,8 @@ void ResultWriter::append(const std::vector<PairResult>& rows) {
 TimingLog::TimingLog(const std::string& path) {
   file_ = std::fopen(path.c_str(), "w");
   if (!file_) throw std::runtime_error("cannot open timing log " + path);
-  std::fprintf(file_, "kind,window,x0,x1,x2,x3,y0,y1,y2,y3,seconds,iterations\n");
+  std::fprintf(file_,
+               "kind,chain,window,x0,x1,x2,x3,y0,y1,y2,y3,seconds,iterations\n");
   std::fflush(file_);
 }
 
@@ -155,16 +204,17 @@ TimingLog::~TimingLog() {
   if (file_) std::fclose(file_);
 }
 
-void TimingLog::solve(int window, const Vec4& p, double seconds, int iterations) {
-  std::fprintf(file_, "solve,%d,%d,%d,%d,%d,,,,,%.6f,%d\n", window, p[0], p[1],
-               p[2], p[3], seconds, iterations);
+void TimingLog::solve(int chain, int window, const Vec4& p, double seconds,
+                      int iterations) {
+  std::fprintf(file_, "solve,%d,%d,%d,%d,%d,%d,,,,,%.6f,%d\n", chain, window,
+               p[0], p[1], p[2], p[3], seconds, iterations);
   std::fflush(file_);
 }
 
-void TimingLog::kernel_sum(int window, const Vec4& x, const Vec4& y,
+void TimingLog::kernel_sum(int chain, int window, const Vec4& x, const Vec4& y,
                            double seconds) {
-  std::fprintf(file_, "kernel_sum,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.6f,\n", window,
-               x[0], x[1], x[2], x[3], y[0], y[1], y[2], y[3], seconds);
+  std::fprintf(file_, "kernel_sum,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.6f,\n", chain,
+               window, x[0], x[1], x[2], x[3], y[0], y[1], y[2], y[3], seconds);
   std::fflush(file_);
 }
 

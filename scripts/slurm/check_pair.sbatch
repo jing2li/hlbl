@@ -35,5 +35,6 @@ export MPICH_RDMA_ENABLED_CUDA=1
 export MPICH_MAX_THREAD_SAFETY=multiple
 export OMP_NUM_THREADS=16
 
-# The second argument is the plaquette recorded in the gauge file.
-srun "$HLBL_BIN" 2 0.554279822834
+# cB211a.072.64: muon mass in MeV, lattice spacing in fm; then the stride of the
+# pair and the plaquette recorded in the gauge file.
+srun "$HLBL_BIN" --muon-mass 105.6583745 --lattice-spacing 0.07957 2 0.554279822834

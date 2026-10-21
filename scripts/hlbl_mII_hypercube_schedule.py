@@ -2,107 +2,89 @@
 """
 hlbl_mII_hypercube_schedule.py
 
-Prototype of the "sliding hypercube" source schedule for the connected
-(kernel-sum) part of hlbl method II, targeting ONE separation |y| = 2n.
+Python reference for the sliding-hypercube schedule of hlbl_hypercube (scheme
+in the README). Nothing physical is computed: inversion and kernel sum are
+placeholders. It prints
 
-No physics is computed. Inversion and kernel sum are placeholders that do
-nothing; what the script produces is
+  * the schedule, with a brute-force check that it has every |y| = 2n pair
+    among its sources exactly once,
+  * the number of solves and kernel sums, and node hours,
+  * the peak propagator cache and the memory per rank,
+  * a PRECHECK block: warnings and errors (no muon_mass or lattice_spacing in
+    the input file, a cache that does not fit). Exit status 1 on errors.
 
-  * the schedule itself (which propagators, which pairs, in which order),
-  * a check that the schedule finds every |y| = 2n pair among its sources,
-  * the number of inversions and kernel-sum calls   -> node hours,
-  * the peak propagator-cache size, and with the solver and contraction
-    reserve the GPU memory per rank                 -> memory.
+Pairs are unordered; see hlbl_mII_xy_exchange_note.tex.
 
-The scheme
-----------
-Let G be the 16 sign vectors (+-1,+-1,+-1,+-1), h in G the step direction and
-n the stride. In units of n:
-
-    A0 = {0} u {g in G : g != h}             16 source points
-    A_k = k*h + A0                           window k
-
-A_k and A_{k-1} share exactly one point: k*h + (-h) = (k-1)*h. So window 0
-costs 16 propagators and every later window costs 15.
-
-A pair (x, y) is contracted iff y - x in n*G, i.e. y - x = (+-n,+-n,+-n,+-n),
-|y - x| = 2n. Window 0 gives 15 pairs (0 with each g). Each further window
-gives 65: 15 inside the window and 50 with window k-1. Nothing ever pairs
-with window k-2, so a window can be dropped once the next one is contracted.
-`check_complete` verifies all of this by brute force for the schedule you ask
-for.
-
-Pairs are unordered: (x, y) and (y, x) are the same pair. See
-hlbl_mII_xy_exchange_note.tex: the reversed order is a strongly correlated
-duplicate, not new physics.
-
-Execution modes (they differ only in when propagators are held)
----------------------------------------------------------------
-  serial       invert all of window k, then do all its kernel sums. Two
-               windows are live, 30 propagators.
-  pipelined    window k+1 is inverted *while* window k's kernel sums run
-               (e.g. solver and contraction on different resources), so the
-               next window's propagators are already in the cache. Three
-               windows are live, 45 propagators.
-  interleaved  each source is contracted with its partners right after its
-               own solve, in the order of Step.sources. 16 propagators at the
-               peak (steady state). This is what the driver does.
-
-In every mode a propagator is evicted as soon as its last pair is done.
-
-Sparsening
-----------
---sparsen F keeps each cached propagator only on a fixed, predetermined set of
-V/F sites (the stochastically chosen x and z of the kernel sum), so the cache
-shrinks by F. The set must be the same for every propagator: the contraction
-at x needs both propagators at x. The solver still works on the full volume,
-but each of the 12 solutions can be sparsened as soon as it is done, so the
-only full-volume fields are the solver's own. The kernel-sum time also
-changes with F, so time it with the same sparsening.
+Modes (each propagator is freed after its last pair):
+  serial       solve a whole window, then contract it. Peak 30.
+  interleaved  contract each source right after its solve. Peak 16. This is
+               what the driver does.
 
 Memory model (per rank, GiB)
-----------------------------
-    peak positions x size of one position + QUDA solver overhead <= GPU memory
+    GPU:   cache (3 blocks with cache = host) + solver + kernel stack + reserve
+    host:  cache (cache = host only) + solver host memory
 
-  cache        peak source positions x 4608 B (2 flavours x 12 x 24 doubles)
-               x local sites
-  solver       QUDA's peak device allocation of the production multigrid solver
-               (time_hlbl/input/invert.input.in), measured with time_invert at
-               8/16/32/64 nodes (QUDA_DEV_GIB, from strong-invert/memory.txt).
-               Only those node counts have data; other rows print "no data".
-               --solver-gb replaces the measurement with one number.
+  cache         peak positions x 4608 B (2 flavours x 12 x 24 doubles) x local
+                sites
+  solver        QUDA's peak device memory, measured at 4-64 nodes
+                (QUDA_DEV_GIB); other node counts print "no data". --solver-gb
+                replaces it.
+  kernel stack  --kernel-stack-bytes x --gpu-sms x --gpu-threads-per-sm, which
+                the CUDA driver reserves at the 4-point kernel's first launch
+  reserve       --reserve-gb: CUDA context, cuBLAS, MPI buffers. 0 by default.
+  solver host   --solver-host-gb: host memory beside the cache, the MaxRSS of
+                `hlbl_hypercube --dummy-run --cache device`. 15 GiB by default.
 
-  Not modelled: the CUDA context, cuBLAS/MPI buffers and the driver's stack
-  reservation of the contraction kernel (about 10 GiB per rank for the 4-point
-  kernel of cuda_lattice.cu). QUDA's counters do not show them; --reserve-gb
-  adds a flat amount for them.
+--sparsen F keeps every cached propagator on the same fixed V/F sites (the
+kernel sum's x and z), so the cache shrinks by F. Time the kernel sum with the
+same F.
 
-Usage (Python >= 3.8; the system python3 on the login node is 3.6)
------------------------------------------------------------------
+Usage (Python >= 3.8; the login node's python3 is 3.6)
     python3.11 hlbl_mII_hypercube_schedule.py --stride 4 --steps 10
     python3.11 hlbl_mII_hypercube_schedule.py --stride 4 --show-pairs 1
     python3.11 hlbl_mII_hypercube_schedule.py --stride 8 --lattice 160 80 80 80 \\
         --procs 4 2 2 2 --t-invert 300 --t-kernel-sum 40 --configs 100
+    python3.11 hlbl_mII_hypercube_schedule.py --in hlbl.input --t-invert 40 --t-kernel-sum 2.8
+
+--in reads the input file of `hlbl_hypercube --in`. Its chains run one after
+the other with one cache; counts are for whole chains, and window ranges only
+matter for the overlap warning. lattice, procs, flavors and cache come from the
+file unless given on the command line; muon_mass and lattice_spacing must be in
+it.
 """
 
 import argparse
 import itertools
 import math
+import re
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
 
 SIGN_VECTORS = tuple(itertools.product((-1, 1), repeat=4))
 ZERO = (0, 0, 0, 0)
+ONES = (1, 1, 1, 1)
 N_SPIN_COLOR = 12          # point-source components per flavor
 GB = 1024.0 ** 3
-MODES = ("serial", "pipelined", "interleaved")
+HBARC_MEV_FM = 197.3269804  # as in include/hlbl/physics.hpp
+MODES = ("serial", "interleaved")
 
 # QUDA's peak device allocation per rank (GiB) with the production multigrid
-# solver on cB211a.072.64 (128x64^3), 4 ranks per node, rank 0 high-water mark from
-# strong-invert/memory.txt: (local sites, GiB) at 8, 16, 32, 64 nodes.
-QUDA_DEV_GIB = ((1048576, 11.38), (524288, 5.89), (262144, 3.04), (131072, 1.56))
+# solver on cB211a.072.64 (128x64^3), 4 ranks per node, rank 0 high-water mark
+# ("Device memory used" in ~/cvc_timing/cB/strong-invert/n*/out.*):
+# (local sites, GiB) at 4, 8, 16, 32, 64 nodes.
+QUDA_DEV_GIB = ((2097152, 22.07), (1048576, 11.38), (524288, 5.89), (262144, 3.04),
+                (131072, 1.56))
 
 GPU_MEM_GB = 95.6         # nvidia-smi memory.total of a GH200: 97871 MiB
+
+# Kernel stack (see "Memory model"): STACK of ker_4pt_contraction in
+# `cuobjdump --dump-resource-usage build/hlbl_hypercube`, and a GH200's SMs and
+# threads per SM.
+KERNEL_STACK_BYTES = 41280
+GPU_SMS = 132
+GPU_THREADS_PER_SM = 2048
+SOLVER_HOST_GB = 15.0     # host memory beside the cache, per rank (README)
 
 
 # =====================================================================
@@ -134,8 +116,12 @@ def unordered(p, q):
 # =====================================================================
 
 def window_offsets(h):
-    """A0 = {0} u {g in G : g != h}, in units of the stride."""
-    return [ZERO] + [g for g in SIGN_VECTORS if g != h]
+    """A0 = {0} u {g in G : g != h}, in units of the stride, in solve order:
+    that of h = (1,1,1,1), reflected by h. A reflection keeps the separations,
+    so every h has the cache peak (16) of (1,1,1,1); G \\ {h} in SIGN_VECTORS
+    order would peak at 17 to 25."""
+    return [ZERO] + [tuple(hi * gi for hi, gi in zip(h, g))
+                     for g in SIGN_VECTORS if g != ONES]
 
 
 @dataclass
@@ -221,6 +207,248 @@ def max_steps_without_wrap(h, stride, lattice, origin=ZERO, cap=10000):
             return k - 1
         seen |= new
     return cap
+
+
+# =====================================================================
+# Several chains: the input file of hlbl_hypercube
+# =====================================================================
+# Same grammar and error messages as `hlbl_hypercube --in`. out, timing and
+# random_fields are checked and ignored.
+
+@dataclass
+class Chain:
+    """Windows 0..steps of the schedule from `start` in direction `direction`.
+    Defaults are those of the command line."""
+    start: tuple = ZERO
+    direction: tuple = ONES
+    stride: int = 4
+    steps: int = -1            # -1: as many as fit before sources wrap
+    window_begin: int = 0      # the job runs windows [window_begin, window_end)
+    window_end: int = -1       # -1: through the last
+
+
+@dataclass
+class Input:
+    chains: list = field(default_factory=list)
+    flavors: int = None        # None: not in the file
+    lattice: tuple = None
+    procs: tuple = None
+    cache: str = None
+    muon_mass: float = None        # MeV
+    lattice_spacing: float = None  # fm
+
+
+class InputError(ValueError):
+    """A bad input file; the message starts with `file:line:`."""
+
+
+def _int(text):
+    t = text.strip()
+    if not re.fullmatch(r"[+-]?[0-9]+", t):
+        raise ValueError(f"not an integer: '{t}'")
+    return int(t)
+
+
+def _float(text):
+    """Decimal notation only, like the C++ parser: no inf, nan, hex or '_'."""
+    t = text.strip()
+    if not re.fullmatch(r"[0-9+\-.eE]+", t):
+        raise ValueError(f"not a number: '{t}'")
+    try:
+        return float(t)
+    except ValueError:
+        raise ValueError(f"not a number: '{t}'") from None
+
+
+def _positive(text, name, unit):
+    v = _float(text)
+    if not math.isfinite(v) or v <= 0:
+        raise ValueError(f"{name} must be a positive number ({unit})")
+    return v
+
+
+def _bool(text):
+    t = text.strip().lower()
+    if t in ("yes", "on", "true", "1"):
+        return True
+    if t in ("no", "off", "false", "0"):
+        return False
+    raise ValueError(f"not a yes/no value: '{text.strip()}'")
+
+
+def parse_vec4(text):
+    """'a,b,c,d' (commas or blanks)"""
+    words = text.replace(",", " ").split()
+    if len(words) != 4:
+        raise ValueError(f"expected 4 integers: '{text}'")
+    return tuple(_int(w) for w in words)
+
+
+def parse_window_range(text):
+    """'a:b' -> (a, b), half-open; 'a:' runs through the last window (b = -1),
+    ':b' starts at 0."""
+    if ":" not in text:
+        raise ValueError(f"window range wants a:b, got '{text}'")
+    a, b = text.split(":", 1)
+    return (_int(a) if a else 0), (_int(b) if b else -1)
+
+
+def validate_chain(c):
+    """Raises ValueError unless the direction is a sign vector, the stride is
+    positive and the steps and window range make sense."""
+    if any(d not in (1, -1) for d in c.direction):
+        raise ValueError("dir must be a sign vector (+-1,+-1,+-1,+-1)")
+    if c.stride <= 0:
+        raise ValueError("stride must be positive")
+    if c.steps < -1:
+        raise ValueError("steps must be >= 0 (or auto)")
+    if c.window_begin < 0:
+        raise ValueError("window range starts below 0")
+    if c.window_end >= 0 and c.window_end <= c.window_begin:
+        raise ValueError("empty window range")
+    if c.steps >= 0 and c.window_begin > c.steps:
+        raise ValueError("window range starts after the last window")
+
+
+def _parse_chain(tokens):
+    c = Chain()
+    seen = set()
+    for token in tokens:
+        if "=" not in token:
+            raise ValueError(f"expected key=value, got '{token}'")
+        key, value = token.split("=", 1)
+        if key in seen:
+            raise ValueError(f"chain key '{key}' given twice")
+        seen.add(key)
+        if key == "start":
+            c.start = parse_vec4(value)
+        elif key == "dir":
+            c.direction = parse_vec4(value)
+        elif key == "stride":
+            c.stride = _int(value)
+        elif key == "steps":
+            c.steps = -1 if value == "auto" else _int(value)
+        elif key == "windows":
+            c.window_begin, c.window_end = parse_window_range(value)
+        else:
+            raise ValueError(f"unknown chain key '{key}'")
+    for required in ("start", "dir", "stride"):
+        if required not in seen:
+            raise ValueError(f"chain needs {required}=")
+    validate_chain(c)
+    return c
+
+
+def _set_global(inp, key, value):
+    v = value.strip()
+    if key == "cache":
+        if v not in ("device", "host"):
+            raise ValueError("cache must be device or host")
+        inp.cache = v
+    elif key == "random_fields":
+        _bool(v)
+    elif key in ("out", "timing"):
+        pass
+    elif key == "muon_mass":
+        inp.muon_mass = _positive(v, key, "MeV")
+    elif key == "lattice_spacing":
+        inp.lattice_spacing = _positive(v, key, "fm")
+    elif key == "flavors":
+        inp.flavors = _int(v)
+        if inp.flavors not in (1, 2):
+            raise ValueError("flavors must be 1 or 2")
+    elif key == "lattice":
+        inp.lattice = parse_vec4(v)
+    elif key == "procs":
+        inp.procs = parse_vec4(v)
+    else:
+        raise ValueError(f"unknown option '{key}'")
+
+
+def parse_input(text, name="input"):
+    """The chains and options of an input file. Raises InputError."""
+    inp = Input()
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            words = line.split()
+            if words[0] == "chain":
+                inp.chains.append(_parse_chain(words[1:]))
+            elif "=" in line:   # `key = value`, `key=value`
+                key, value = line.split("=", 1)
+                _set_global(inp, key.strip(), value)
+            else:               # `key value`
+                _set_global(inp, words[0], line[len(words[0]):])
+        except ValueError as e:
+            raise InputError(f"{name}:{number}: {e}") from None
+    return inp
+
+
+def parse_input_file(path):
+    with open(path) as f:
+        return parse_input(f.read(), path)
+
+
+def footprint(steps, chain, lattice):
+    """What the windows `chain` runs (window_begin .. window_end - 1) touch: the
+    wrapped source positions, as {position: window that solves it}, and the
+    wrapped unordered pairs."""
+    end = len(steps) if chain.window_end < 0 else min(chain.window_end, len(steps))
+    sources, pairs = {}, set()
+    for step in steps[chain.window_begin:end]:
+        for src in step.sources:
+            p = wrap(src.position, lattice)
+            sources.setdefault(p, step.index)
+            for q in src.partners:
+                pairs.add(unordered(p, wrap(q, lattice)))
+    return sources, pairs
+
+
+MAX_OVERLAP_LINES = 20     # pairs of chains listed
+MAX_SHARED_SOURCES = 10    # shared sources listed per pair of chains
+
+
+def fmt_vec4(v):
+    return "(" + ",".join(str(x) for x in v) + ")"
+
+
+def overlap_report(footprints):
+    """The overlap warning, from each chain's footprint(): the sources and pairs
+    in more than one chain, and per pair of chains the first shared sources
+    with the window of each chain that solves them. Empty if there is no
+    overlap. Same lines as hlbl_hypercube."""
+    source_count, pair_count = Counter(), Counter()
+    for sources, pairs in footprints:
+        source_count.update(sources.keys())
+        pair_count.update(pairs)
+    n_sources = sum(1 for n in source_count.values() if n > 1)
+    n_pairs = sum(1 for n in pair_count.values() if n > 1)
+    if not n_sources and not n_pairs:
+        return []
+    lines = [f"WARNING: {n_sources} source positions are in more than one chain "
+             f"(solved once per chain) and {n_pairs} pairs are computed in more "
+             f"than one chain"]
+    shown = more = 0
+    for (i, (si, pi)), (j, (sj, pj)) in itertools.combinations(enumerate(footprints), 2):
+        shared = sorted(si.keys() & sj.keys())
+        np_ = len(pi & pj)
+        if not shared and not np_:
+            continue
+        if shown >= MAX_OVERLAP_LINES:
+            more += 1
+            continue
+        shown += 1
+        lines.append(f"chains {i} and {j} share {len(shared)} sources and {np_} pairs")
+        for pos in shared[:MAX_SHARED_SOURCES]:
+            lines.append(f"  source {fmt_vec4(pos)} in window {si[pos]} of chain {i} "
+                         f"and window {sj[pos]} of chain {j}")
+        if len(shared) > MAX_SHARED_SOURCES:
+            lines.append(f"  ... and {len(shared) - MAX_SHARED_SOURCES} more sources")
+    if more:
+        lines.append(f"... and {more} more pairs of chains")
+    return lines
 
 
 # =====================================================================
@@ -312,13 +540,8 @@ def run(steps, lattice, n_flavors, mode):
                     contract(q, src.position)
             stats.per_step.append((k, step.n_new, step.n_pairs, len(cache.props)))
             continue
-        if mode == "serial" or k == 0:
-            for src in step.sources:
-                invert(src.position)
-        if mode == "pipelined" and k + 1 < len(steps):
-            # next window inverts concurrently with this window's kernel sums
-            for src in steps[k + 1].sources:
-                invert(src.position)
+        for src in step.sources:
+            invert(src.position)
         for src in step.sources:
             for q in src.partners:
                 contract(q, src.position)
@@ -327,6 +550,21 @@ def run(steps, lattice, n_flavors, mode):
     assert not cache.props, "propagators left in the cache after the last pair"
     stats.peak_cache = cache.peak
     return stats
+
+
+def combine_stats(parts):
+    """The RunStats of chains run one after the other with one cache: the counts
+    add up, the cache peak is the largest (the cache is empty between chains)."""
+    if len(parts) == 1:
+        return parts[0]
+    total = RunStats(parts[0].mode)
+    for st in parts:
+        total.n_propagators += st.n_propagators
+        total.n_solves += st.n_solves
+        total.n_pairs += st.n_pairs
+        total.n_kernel_sums += st.n_kernel_sums
+    total.peak_cache = max(st.peak_cache for st in parts)
+    return total
 
 
 # =====================================================================
@@ -347,10 +585,11 @@ def print_pairs(steps, k, origin, stride):
         print(f"  {str(rel(src.position)):<20} [{len(src.partners)}] {partners}")
 
 
-def print_orientations(steps):
-    """How often each of the 8 orientations +-g of y is sampled."""
+def print_orientations(pairs):
+    """How often each of the 8 orientations +-g of y is sampled, for a list of
+    (older, newer) pairs."""
     counts = Counter()
-    for older, newer in all_pairs(steps):
+    for older, newer in pairs:
         g = tuple(1 if c > 0 else -1 for c in sub(newer, older))
         counts[max(g, scale(-1, g))] += 1
     print("\norientation balance, y ~ +-g:")
@@ -390,25 +629,32 @@ def quda_dev_gb(local_sites, points=QUDA_DEV_GIB):
 
 def memory_report(stats_by_mode, lattice, procs, n_flavors, precision, sparsen,
                   gpu_mem_gb, host_mem_gb, gpus_per_node, cache_limit,
-                  nodes_scan, local_multiple, solver_gb=None, reserve_gb=0.0):
+                  nodes_scan, local_multiple, solver_gb=None, reserve_gb=0.0,
+                  stack=(KERNEL_STACK_BYTES, GPU_SMS, GPU_THREADS_PER_SM),
+                  solver_host_gb=SOLVER_HOST_GB, cache_mode="device"):
+    """Prints the memory tables. Returns the need and the budget per rank, in
+    bytes, of the run at --procs with `cache_mode` (interleaved order), or None
+    if QUDA was not measured at that local volume."""
     volume = math.prod(lattice)
     bytes_complex = 16 if precision == "double" else 8
     kept_sites = volume / sparsen
     per_flavor = N_SPIN_COLOR * N_SPIN_COLOR * bytes_complex * kept_sites
     per_position = n_flavors * per_flavor
+    stack_gb = math.prod(stack) / GB
+    host_rest = solver_host_gb * GB
 
     def fit(cache, block, res):
-        """GPU: cache + reserve on the device. host: cache in pinned host memory,
-        the device holds the reserve and three blocks (two staging slots and a
-        solve target). -: neither."""
-        if cache + res <= gpu_mem_gb * GB:
+        """GPU: cache + res on the device. host: cache in pinned host memory
+        beside the solver's, the device holds res and three blocks (two staging
+        slots and a solve target). -: neither."""
+        if cache + res <= gpu_mem_gb * GB and host_rest <= host_mem_gb * GB:
             return "GPU"
-        if block * 3 + res <= gpu_mem_gb * GB and cache <= host_mem_gb * GB:
+        if block * 3 + res <= gpu_mem_gb * GB and cache + host_rest <= host_mem_gb * GB:
             return "host"
         return "-"
 
     print("\n" + "=" * 78)
-    print("MEMORY  (peak positions x position size + QUDA solver)")
+    print("MEMORY  (peak positions x position size + QUDA solver + kernel stack)")
     print("=" * 78)
     print(f"lattice {tuple(lattice)} = {volume:,} sites, {precision} precision")
     if sparsen > 1:
@@ -417,11 +663,19 @@ def memory_report(stats_by_mode, lattice, procs, n_flavors, precision, sparsen,
     print(f"one source position    x {n_flavors} flavors            = {per_position / GB:10.2f} GB")
     print(f"budget per rank: {gpu_mem_gb:g} GB GPU, {host_mem_gb:g} GB host")
     if solver_gb is None:
-        print("solver: QUDA peak measured with time_invert (8/16/32/64 nodes, 128x64^3)")
+        print("solver: QUDA peak measured with time_invert (4/8/16/32/64 nodes, 128x64^3)")
     else:
         print(f"solver: {solver_gb:g} GB (--solver-gb)")
+    print(f"kernel stack: {stack[0]} B x {stack[1]} SMs x {stack[2]} threads = "
+          f"{stack_gb:.2f} GB per GPU")
+    print("  (--kernel-stack-bytes: STACK of ker_4pt_contraction in `cuobjdump "
+          "--dump-resource-usage build/hlbl_hypercube`;")
+    print("   --gpu-sms, --gpu-threads-per-sm: multiProcessorCount and "
+          "maxThreadsPerMultiProcessor)")
     if reserve_gb:
         print(f"plus {reserve_gb:g} GB flat reserve (--reserve-gb)")
+    print(f"host beside the cache: {solver_host_gb:g} GB per rank (--solver-host-gb; the "
+          f"MaxRSS of a --dummy-run with --cache device)")
     print()
     print(f"  {'mode':<12} {'positions':>9} {'flavor-props':>12} {'total GB':>10} {'<= limit':>8}")
     for mode, st in stats_by_mode.items():
@@ -432,9 +686,9 @@ def memory_report(stats_by_mode, lattice, procs, n_flavors, precision, sparsen,
     print(f"  '<= limit' compares positions with --cache-limit {cache_limit}.")
 
     print(f"\n  GB per rank by node count ({gpus_per_node} GPUs = ranks per node): "
-          f"cache, and cache + solver = total")
+          f"cache, and cache + solver + kernel stack = total")
     print(f"  fits: GPU = everything on the device, host = cache in pinned host memory "
-          f"(device keeps solver + 3 blocks), - = neither")
+          f"(device keeps solver + stack + 3 blocks), - = neither")
     print(f"  grid: local extents multiples of T {local_multiple[0]}, "
           f"X/Y/Z {local_multiple[1]} (--local-multiple)")
     header = f"  {'nodes':>5} {'ranks':>5}  {'grid':<10} {'solver':>7}"
@@ -450,7 +704,7 @@ def memory_report(stats_by_mode, lattice, procs, n_flavors, precision, sparsen,
         if solver is None:
             print(f"  {nodes:>5} {ranks:>5}  {grid_s:<10} {'no data':>7}")
             continue
-        res_b = (solver + reserve_gb) * GB
+        res_b = (solver + stack_gb + reserve_gb) * GB
         line = f"  {nodes:>5} {ranks:>5}  {grid_s:<10} {solver:>7.2f}"
         for st in stats_by_mode.values():
             cache = st.peak_cache * per_position / ranks
@@ -461,20 +715,43 @@ def memory_report(stats_by_mode, lattice, procs, n_flavors, precision, sparsen,
     print("  'none': no process grid of that size fits the lattice and the MG blocking.")
     print("  'no data': QUDA was not measured at this local volume.")
 
+    # the run at --procs, for the PRECHECK block
+    ranks = math.prod(procs)
+    solver = solver_gb if solver_gb is not None else quda_dev_gb(volume // ranks)
+    if solver is None:
+        return None
+    cache = stats_by_mode["interleaved"].peak_cache * per_position / ranks
+    res = (solver + stack_gb + reserve_gb) * GB
+    return {
+        "ranks": ranks,
+        "gpu_need": (cache if cache_mode == "device" else 3 * per_position / ranks) + res,
+        "gpu_have": gpu_mem_gb * GB,
+        "host_need": (cache if cache_mode == "host" else 0) + host_rest,
+        "host_have": host_mem_gb * GB,
+    }
+
 
 def cost_report(stats, chains, configs, procs, gpus_per_node,
-                t_invert, t_kernel_sum, t_setup):
+                t_invert, t_kernel_sum, t_setup, n_listed=None):
+    """`stats` is one chain repeated `chains` times, or, with n_listed (the
+    number of chains of an input file), the totals of all the listed chains."""
     ranks = math.prod(procs)
     nodes = ranks / gpus_per_node
+    if n_listed:
+        chains = 1
     n_prop = stats.n_propagators * chains
     n_ks = stats.n_kernel_sums * chains
 
     print("\n" + "=" * 78)
     print("CALL COUNTS AND NODE HOURS")
     print("=" * 78)
-    print(f"per chain:  {stats.n_propagators} propagators ({stats.n_solves} solves), "
-          f"{stats.n_pairs} pairs, {stats.n_kernel_sums} kernel-sum calls")
-    print(f"per config: {chains} chain(s) -> {n_prop} propagators, {n_ks} kernel-sum calls")
+    if n_listed:
+        print(f"per config: {n_listed} chain(s) -> {n_prop} propagators ({stats.n_solves} solves), "
+              f"{stats.n_pairs} pairs, {n_ks} kernel-sum calls")
+    else:
+        print(f"per chain:  {stats.n_propagators} propagators ({stats.n_solves} solves), "
+              f"{stats.n_pairs} pairs, {stats.n_kernel_sums} kernel-sum calls")
+        print(f"per config: {chains} chain(s) -> {n_prop} propagators, {n_ks} kernel-sum calls")
     print(f"all:        {configs} config(s) -> {n_prop * configs} propagators, "
           f"{n_ks * configs} kernel-sum calls")
 
@@ -504,28 +781,47 @@ def main():
         description="Sliding-hypercube source schedule for the hlbl connected kernel sum.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
+    # The options that default to "not given" use SUPPRESS: an option given on
+    # the command line overrides the input file, and --direction, --stride,
+    # --steps and --origin cannot be combined with --in.
     g = p.add_argument_group("schedule")
-    g.add_argument("--direction", type=int, nargs=4, default=[1, 1, 1, 1],
-                   metavar=("HT", "HX", "HY", "HZ"), help="step direction h, a sign vector")
-    g.add_argument("--stride", type=int, default=4, help="n; target separation |y| = 2n")
-    g.add_argument("--steps", type=int, default=None,
+    g.add_argument("--in", dest="input", metavar="FILE", default=None,
+                   help="input file of hlbl_hypercube: a list of chains (start, direction, "
+                        "stride, steps) and options, see scripts/input/hlbl.input.example. "
+                        "Replaces --direction, --stride, --steps and --origin")
+    g.add_argument("--direction", type=int, nargs=4, default=argparse.SUPPRESS,
+                   metavar=("HT", "HX", "HY", "HZ"),
+                   help="step direction h, a sign vector (default: 1 1 1 1)")
+    g.add_argument("--stride", type=int, default=argparse.SUPPRESS,
+                   help="n; target separation |y| = 2n (default: 4)")
+    g.add_argument("--steps", type=int, default=argparse.SUPPRESS,
                    help="number of shifts (windows = steps+1); default: as many as fit "
                         "before sources wrap onto each other")
-    g.add_argument("--origin", type=int, nargs=4, default=[0, 0, 0, 0], metavar=("T", "X", "Y", "Z"))
-    g.add_argument("--flavors", type=int, default=2, choices=(1, 2),
-                   help="flavors inverted per position, and kernel-sum calls per pair")
+    g.add_argument("--origin", type=int, nargs=4, default=argparse.SUPPRESS,
+                   metavar=("T", "X", "Y", "Z"), help="(default: 0 0 0 0)")
+    g.add_argument("--flavors", type=int, default=argparse.SUPPRESS, choices=(1, 2),
+                   help="flavors inverted per position, and kernel-sum calls per pair "
+                        "(default: 2)")
     g.add_argument("--mode", choices=MODES, default="interleaved",
                    help="execution order used for the per-step table")
 
     g = p.add_argument_group("lattice and machine")
-    g.add_argument("--lattice", type=int, nargs=4, default=[128, 64, 64, 64],
-                   metavar=("T", "LX", "LY", "LZ"))
-    g.add_argument("--procs", type=int, nargs=4, default=[2, 2, 2, 2],
-                   metavar=("PT", "PX", "PY", "PZ"), help="MPI grid, one GPU per rank")
+    g.add_argument("--lattice", type=int, nargs=4, default=argparse.SUPPRESS,
+                   metavar=("T", "LX", "LY", "LZ"), help="(default: 128 64 64 64)")
+    g.add_argument("--procs", type=int, nargs=4, default=argparse.SUPPRESS,
+                   metavar=("PT", "PX", "PY", "PZ"),
+                   help="MPI grid, one GPU per rank (default: 2 2 2 2)")
     g.add_argument("--gpus-per-node", type=int, default=4)
     g.add_argument("--gpu-mem-gb", type=float, default=GPU_MEM_GB,
                    help="per GPU, as nvidia-smi memory.total (GH200: 97871 MiB)")
     g.add_argument("--host-mem-gb", type=float, default=120.0, help="per rank (GH200 Grace)")
+    g.add_argument("--cache", choices=("device", "host"), default=argparse.SUPPRESS,
+                   help="where the run keeps the propagators (default: the input file's "
+                        "cache, else device)")
+    g.add_argument("--gpu-sms", type=int, default=GPU_SMS,
+                   help="multiProcessorCount of the GPU (deviceQuery)")
+    g.add_argument("--gpu-threads-per-sm", type=int, default=GPU_THREADS_PER_SM,
+                   help="maxThreadsPerMultiProcessor of the GPU (deviceQuery)")
     g.add_argument("--precision", choices=("double", "single"), default="double",
                    help="storage precision of cached propagators")
     g.add_argument("--cache-limit", type=int, default=64,
@@ -541,8 +837,15 @@ def main():
     g = p.add_argument_group("solver memory beside the cache (per rank, see 'Memory model')")
     g.add_argument("--solver-gb", type=float, default=None,
                    help="QUDA's peak allocation per rank; default: measured values per node count")
+    g.add_argument("--kernel-stack-bytes", type=int, default=KERNEL_STACK_BYTES,
+                   help="stack per thread of the 4-point kernel, reserved for every thread "
+                        "slot of the GPU: the STACK column of ker_4pt_contraction in "
+                        "`cuobjdump --dump-resource-usage build/hlbl_hypercube`")
     g.add_argument("--reserve-gb", type=float, default=0.0,
-                   help="flat extra per rank (CUDA context, kernel stack reservation, ...)")
+                   help="flat extra per rank (CUDA context, cuBLAS and MPI buffers)")
+    g.add_argument("--solver-host-gb", type=float, default=SOLVER_HOST_GB,
+                   help="host memory per rank beside the cache: the sacct MaxRSS of "
+                        "`hlbl_hypercube --dummy-run --cache device`")
 
     g = p.add_argument_group("cost (seconds, from time_hlbl at the same --procs)")
     g.add_argument("--t-invert", type=float, default=None,
@@ -550,8 +853,11 @@ def main():
     g.add_argument("--t-kernel-sum", type=float, default=None,
                    help="per kernel-sum call, one flavor (kernel-sum + dzu-dzsu); "
                         "measure it with the same sparsening")
-    g.add_argument("--t-setup", type=float, default=0.0, help="per config (gauge read, MG setup)")
-    g.add_argument("--chains", type=int, default=1, help="independent chains per config")
+    g.add_argument("--t-setup", type=float, default=0.0,
+                   help="per config, paid once however many chains run (gauge read, MG setup)")
+    g.add_argument("--chains", type=int, default=1,
+                   help="identical independent chains per config (cost only); with --in the "
+                        "chains are those of the file")
     g.add_argument("--configs", type=int, default=1)
 
     g = p.add_argument_group("output")
@@ -560,55 +866,177 @@ def main():
     g.add_argument("--show-steps", type=int, default=5, help="rows of the per-step table")
     args = p.parse_args()
 
-    h = tuple(args.direction)
-    if h not in SIGN_VECTORS:
-        p.error(f"--direction must be a sign vector (+-1,+-1,+-1,+-1), got {h}")
-    lattice, origin, stride = tuple(args.lattice), tuple(args.origin), args.stride
-    if any(L % P for L, P in zip(lattice, args.procs)):
-        p.error(f"--procs {tuple(args.procs)} does not divide --lattice {lattice}")
+    # ---- the chains: from the input file, or one from the command line
+    if args.input:
+        given = [f"--{n}" for n in ("direction", "stride", "steps", "origin") if n in args]
+        if given:
+            p.error(f"{', '.join(given)} cannot be combined with --in (they describe one chain)")
+        if args.chains != 1:
+            p.error("--chains counts identical chains; with --in, list the chains in the file")
+        try:
+            inp = parse_input_file(args.input)
+        except (OSError, InputError) as e:
+            p.error(str(e))
+        chains = inp.chains or [Chain()]
+    else:
+        inp = Input()
+        chain = Chain()
+        if "direction" in args:
+            chain.direction = tuple(args.direction)
+        if "stride" in args:
+            chain.stride = args.stride
+        if "steps" in args:
+            chain.steps = args.steps
+        if "origin" in args:
+            chain.start = tuple(args.origin)
+        if chain.direction not in SIGN_VECTORS:
+            p.error(f"--direction must be a sign vector (+-1,+-1,+-1,+-1), got {chain.direction}")
+        try:
+            validate_chain(chain)
+        except ValueError as e:
+            p.error(str(e))
+        chains = [chain]
+    multi = len(chains) > 1
 
-    max_steps = max_steps_without_wrap(h, stride, lattice, origin)
-    n_steps = max_steps if args.steps is None else args.steps
+    lattice = tuple(args.lattice) if "lattice" in args else (inp.lattice or (128, 64, 64, 64))
+    procs = tuple(args.procs) if "procs" in args else (inp.procs or (2, 2, 2, 2))
+    flavors = args.flavors if "flavors" in args else (inp.flavors or 2)
+    cache_mode = args.cache if "cache" in args else (inp.cache or "device")
+    if any(L % P for L, P in zip(lattice, procs)):
+        p.error(f"--procs {procs} does not divide --lattice {lattice}")
 
-    print(f"direction h = {h}, stride n = {stride}, |y| = 2n = {2 * stride}, "
-          f"y = (+-{stride},+-{stride},+-{stride},+-{stride})")
-    print(f"lattice {lattice}, origin {origin}, {n_steps} steps ({n_steps + 1} windows)")
-    if 2 * stride >= min(lattice):
-        print(f"WARNING: stride {stride} >= L/2 = {min(lattice) // 2}: the minimum-image "
-              f"separation is not (+-n,+-n,+-n,+-n).")
-    if n_steps > max_steps:
-        print(f"WARNING: beyond {max_steps} steps sources wrap onto sites already used.")
+    # ---- what the PRECHECK block at the end lists
+    checks, warnings, errors = [], [], []
+    if args.input:
+        missing = [k for k in ("muon_mass", "lattice_spacing") if getattr(inp, k) is None]
+        if missing:
+            errors.append(f"{args.input} has no {' and no '.join(missing)}: "
+                          f"hlbl_hypercube does not run without them")
+        else:
+            xunit = inp.muon_mass / HBARC_MEV_FM * inp.lattice_spacing
+            print(f"muon mass {inp.muon_mass:.10g} MeV, lattice spacing "
+                  f"{inp.lattice_spacing:.10g} fm: xunit = m_mu a = {xunit:.10g}")
+            checks.append(f"physics inputs: xunit = m_mu a = {xunit:.10g}")
 
-    steps = build_schedule(h, stride, n_steps, origin)
-    check_complete(steps, stride)
-    print("check: every |y| = 2n pair among the scheduled sources is scheduled exactly once")
+    # ---- one schedule per chain
+    schedules, footprints, n_steps_of = [], [], []
+    for c, chain in enumerate(chains):
+        h, stride, origin = chain.direction, chain.stride, chain.start
+        tag = f"chain {c}: " if multi else ""
+        max_steps = max_steps_without_wrap(h, stride, lattice, origin)
+        n_steps = max_steps if chain.steps < 0 else chain.steps
+        if chain.window_begin > n_steps:
+            p.error(f"chain {c}: window range starts after the last window")
 
-    if args.show_pairs is not None:
-        for k in (args.show_pairs or [min(1, n_steps)]):
-            if 0 <= k <= n_steps:
-                print_pairs(steps, k, origin, stride)
-    print_orientations(steps)
+        if multi:
+            print(f"\nchain {c} of {len(chains)}")
+        print(f"direction h = {h}, stride n = {stride}, |y| = 2n = {2 * stride}, "
+              f"y = (+-{stride},+-{stride},+-{stride},+-{stride})")
+        print(f"lattice {lattice}, origin {origin}, {n_steps} steps ({n_steps + 1} windows)")
+        if 2 * stride >= min(lattice):
+            print(f"WARNING: {tag}stride {stride} >= L/2 = {min(lattice) // 2}: the minimum-image "
+                  f"separation is not (+-n,+-n,+-n,+-n).")
+            warnings.append(f"{tag}stride {stride} >= L/2: the minimum-image separation is "
+                            f"not (+-n,+-n,+-n,+-n)")
+        if n_steps > max_steps:
+            print(f"WARNING: {tag}beyond {max_steps} steps sources wrap onto sites already used.")
+            warnings.append(f"{tag}{n_steps} steps wrap sources onto sites already used "
+                            f"(at most {max_steps} do not)")
 
-    stats_by_mode = {mode: run(steps, lattice, args.flavors, mode) for mode in MODES}
+        steps = build_schedule(h, stride, n_steps, origin)
+        check_complete(steps, stride)
+        print("check: every |y| = 2n pair among the scheduled sources is scheduled exactly once")
+
+        if args.show_pairs is not None:
+            for k in (args.show_pairs or [min(1, n_steps)]):
+                if 0 <= k <= n_steps:
+                    print_pairs(steps, k, origin, stride)
+        schedules.append(steps)
+        n_steps_of.append(n_steps)
+        footprints.append(footprint(steps, chain, lattice))
+
+    checks.append("schedules: every |y| = 2n pair among the scheduled sources once")
+    overlap = overlap_report(footprints)
+    if overlap:
+        print()
+        for line in overlap:
+            print(line)
+        warnings.append(overlap[0][len("WARNING: "):])
+    print_orientations([pair for steps in schedules for pair in all_pairs(steps)])
+
+    # ---- counts: chains run one after the other with one cache
+    per_chain = [{mode: run(steps, lattice, flavors, mode) for mode in MODES}
+                 for steps in schedules]
+    for by_mode in per_chain:
+        ref = by_mode["serial"]
+        for st in by_mode.values():
+            assert (st.n_propagators, st.n_kernel_sums) == (ref.n_propagators, ref.n_kernel_sums)
+    stats_by_mode = {mode: combine_stats([by_mode[mode] for by_mode in per_chain])
+                     for mode in MODES}
     reference = stats_by_mode["serial"]
-    for st in stats_by_mode.values():
-        assert (st.n_propagators, st.n_kernel_sums) == (reference.n_propagators, reference.n_kernel_sums)
 
     chosen = stats_by_mode[args.mode]
-    print(f"\nper-step table, mode {args.mode} (cache = positions held after the step):")
-    print(f"  {'step':>5} {'new props':>9} {'pairs':>6} {'cache':>6}")
-    rows = chosen.per_step
-    shown = rows if len(rows) <= args.show_steps + 1 else rows[:args.show_steps] + [None] + rows[-1:]
-    for row in shown:
-        print("  " + ("   ..." if row is None else f"{row[0]:>5} {row[1]:>9} {row[2]:>6} {row[3]:>6}"))
-    print(f"  total: {chosen.n_propagators} propagators, {chosen.n_pairs} pairs "
-          f"(16 + 15*K and 15 + 65*K for K = {n_steps})")
+    if not multi:
+        print(f"\nper-step table, mode {args.mode} (cache = positions held after the step):")
+        print(f"  {'step':>5} {'new props':>9} {'pairs':>6} {'cache':>6}")
+        rows = chosen.per_step
+        shown = rows if len(rows) <= args.show_steps + 1 else rows[:args.show_steps] + [None] + rows[-1:]
+        for row in shown:
+            print("  " + ("   ..." if row is None else f"{row[0]:>5} {row[1]:>9} {row[2]:>6} {row[3]:>6}"))
+        print(f"  total: {chosen.n_propagators} propagators, {chosen.n_pairs} pairs "
+              f"(16 + 15*K and 15 + 65*K for K = {n_steps_of[0]})")
+    else:
+        print(f"\nper-chain table, mode {args.mode} (whole chains; 'windows' is the range that runs):")
+        print(f"  {'chain':>5} {'start':<18} {'direction':<15} {'stride':>6} {'steps':>5} "
+              f"{'windows':>9} {'props':>6} {'pairs':>6} {'peak':>5}")
+        for c, chain in enumerate(chains):
+            st = per_chain[c][args.mode]
+            if chain.window_begin == 0 and chain.window_end < 0:
+                windows = "all"
+            else:
+                windows = f"{chain.window_begin}:{chain.window_end if chain.window_end >= 0 else ''}"
+            print(f"  {c:>5} {str(chain.start):<18} {str(chain.direction):<15} {chain.stride:>6} "
+                  f"{n_steps_of[c]:>5} {windows:>9} {st.n_propagators:>6} {st.n_pairs:>6} "
+                  f"{st.peak_cache:>5}")
+        print(f"  total: {len(chains)} chains, {chosen.n_propagators} propagators, "
+              f"{chosen.n_pairs} pairs, cache peak {chosen.peak_cache} (the largest of the chains)")
 
-    memory_report(stats_by_mode, lattice, args.procs, args.flavors, args.precision, args.sparsen,
-                  args.gpu_mem_gb, args.host_mem_gb, args.gpus_per_node, args.cache_limit,
-                  args.nodes_scan, tuple(args.local_multiple), args.solver_gb, args.reserve_gb)
-    cost_report(reference, args.chains, args.configs, args.procs, args.gpus_per_node,
-                args.t_invert, args.t_kernel_sum, args.t_setup)
+    chosen = memory_report(
+        stats_by_mode, lattice, procs, flavors, args.precision, args.sparsen,
+        args.gpu_mem_gb, args.host_mem_gb, args.gpus_per_node, args.cache_limit,
+        args.nodes_scan, tuple(args.local_multiple), args.solver_gb, args.reserve_gb,
+        (args.kernel_stack_bytes, args.gpu_sms, args.gpu_threads_per_sm),
+        args.solver_host_gb, cache_mode)
+    where = (f"{math.prod(procs) / args.gpus_per_node:g} nodes ({math.prod(procs)} ranks), "
+             f"cache = {cache_mode}")
+    if chosen is None:
+        warnings.append(f"memory at {where}: QUDA was not measured at this local volume "
+                        f"(give --solver-gb)")
+    else:
+        line = (f"memory at {where}: GPU {chosen['gpu_need'] / GB:.1f} of "
+                f"{chosen['gpu_have'] / GB:.1f} GB, host {chosen['host_need'] / GB:.1f} of "
+                f"{chosen['host_have'] / GB:.1f} GB per rank")
+        if chosen["gpu_need"] <= chosen["gpu_have"] and chosen["host_need"] <= chosen["host_have"]:
+            checks.append(line)
+        else:
+            errors.append(line + ": does not fit")
+    cost_report(reference, args.chains, args.configs, procs, args.gpus_per_node,
+                args.t_invert, args.t_kernel_sum, args.t_setup,
+                n_listed=len(chains) if args.input else None)
+
+    print("\n" + "=" * 78)
+    print("PRECHECK")
+    print("=" * 78)
+    for line in checks:
+        print(f"  ok       {line}")
+    for line in warnings:
+        print(f"  WARNING  {line}")
+    for line in errors:
+        print(f"  ERROR    {line}")
+    if errors:
+        print(f"\n{len(errors)} error(s): fix them before submitting")
+        sys.exit(1)
+    print("\nno errors; next: hlbl_hypercube --dummy-run on the resources of the run")
 
 
 if __name__ == "__main__":

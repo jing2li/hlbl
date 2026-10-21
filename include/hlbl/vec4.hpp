@@ -4,8 +4,7 @@
 
 namespace hlbl {
 
-// A lattice site or lattice offset in (t, x, y, z) order, matching cvc's
-// coordinate convention throughout.
+// A lattice site or offset, (t, x, y, z) as in cvc.
 using Vec4 = std::array<int, 4>;
 
 constexpr Vec4 add(Vec4 a, Vec4 b) {
@@ -36,10 +35,9 @@ inline Vec4 site_map(Vec4 x, Vec4 L) {
           site_map_1d(x[2], L[2]), site_map_1d(x[3], L[3])};
 }
 
-// Minimum-image difference a - b. NOT site_map(a) - site_map(b): that can
-// leave a component outside (-L/2, L/2] when a and b wrap differently, which
-// is not a separation the periodic lattice can realise. Every kernel
-// argument built as a difference must go through this. cvc site_map_diff().
+// Minimum-image difference a - b (cvc site_map_diff()). Use it for every
+// kernel argument built as a difference: site_map(a) - site_map(b) can leave
+// (-L/2, L/2] when a and b wrap differently.
 inline Vec4 site_map_diff(Vec4 a, Vec4 b, Vec4 L) {
   return site_map(mod_pos(sub(a, b), L), L);
 }

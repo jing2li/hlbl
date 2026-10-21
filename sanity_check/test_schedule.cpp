@@ -1,10 +1,10 @@
-// Checks the schedule: window sizes, pair counts, completeness and the
-// cache peak of each mode. scripts/compare_schedule.sh compares it with the
-// Python reference.
+// Window sizes, pair counts, completeness and cache peaks of the schedule.
+// scripts/compare_schedule.sh checks it against the Python reference.
 
 #include "hlbl/schedule.hpp"
 
 #include <cstdio>
+#include <set>
 
 #include "check.hpp"
 
@@ -37,7 +37,7 @@ int main() {
   }
 
   // K = 30 shifts: 466 propagators, 1965 pairs. Peak cache: 16 (interleaved),
-  // 30 (serial), 45 (pipelined).
+  // 30 (serial).
   {
     Vec4 h{1, 1, 1, 1};
     auto steps = build_schedule(h, 4, 30);
@@ -50,16 +50,27 @@ int main() {
     HLBL_CHECK(serial.n_kernel_sums == 3930);
     HLBL_CHECK(serial.peak_cache == 30);
 
-    auto pipelined = simulate(steps, 2, Mode::kPipelined);
-    HLBL_CHECK(pipelined.n_propagators == serial.n_propagators);
-    HLBL_CHECK(pipelined.n_pairs == serial.n_pairs);
-    HLBL_CHECK(pipelined.peak_cache == 45);
-
     auto interleaved = simulate(steps, 2, Mode::kInterleaved);
     HLBL_CHECK(interleaved.n_propagators == serial.n_propagators);
     HLBL_CHECK(interleaved.n_pairs == serial.n_pairs);
     HLBL_CHECK(interleaved.n_kernel_sums == serial.n_kernel_sums);
     HLBL_CHECK(interleaved.peak_cache == 16);
+  }
+
+  // Every direction has the same counts and the same cache peak of 16 as
+  // (1,1,1,1): the solve order of a window is that of (1,1,1,1), reflected by h.
+  for (const Vec4& h : sign_vectors()) {
+    auto offsets = window_offsets(h);
+    HLBL_CHECK(offsets.size() == 16);
+    HLBL_CHECK(std::set<Vec4>(offsets.begin(), offsets.end()).size() == 16);
+    for (int k : {1, 2, 5, 30}) {
+      auto steps = build_schedule(h, 4, k);
+      check_complete(steps, 4);
+      auto st = simulate(steps, 2, Mode::kInterleaved);
+      HLBL_CHECK(st.n_propagators == 16 + 15 * k);
+      HLBL_CHECK(st.n_pairs == 15 + 65 * k);
+      HLBL_CHECK(st.peak_cache == 16);
+    }
   }
 
   // max_steps_without_wrap: on a lattice too small to hold many windows

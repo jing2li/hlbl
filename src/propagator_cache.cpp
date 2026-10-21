@@ -12,6 +12,14 @@ PropagatorCache::PropagatorCache(Residency residency, std::size_t block_len,
       block_len_(block_len),
       pending_(std::move(pending)) {}
 
+void PropagatorCache::reset(std::map<Vec4, int> pending) {
+  if (!entries_.empty()) {
+    throw std::logic_error("PropagatorCache: reset with positions still cached");
+  }
+  pending_ = std::move(pending);
+  peak_ = 0;
+}
+
 DeviceBuffer<double>& PropagatorCache::begin_insert(const Vec4& position) {
   if (entries_.count(position)) {
     throw std::logic_error("PropagatorCache: position inserted twice");

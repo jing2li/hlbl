@@ -1,6 +1,5 @@
-// Runs the Contractor on random propagator fields (one rank). The fields are
-// noise, so this checks only that the pipeline gives a finite result and
-// reproduces a stored value. It is a regression test, not a physics test.
+// Regression test, not a physics test: the Contractor on random fields (one
+// rank) gives a finite result that matches a stored value.
 
 #include "hlbl/contract.hpp"
 

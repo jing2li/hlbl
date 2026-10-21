@@ -26,12 +26,10 @@ find_package(HDF5 REQUIRED COMPONENTS C)
 add_subdirectory(deps/kqed)
 
 # ---------------------------------------------------------------------------
-# GPU kernels from cvc (see kernels/VENDORED.md).
-#
-# This must be an OBJECT library, not STATIC. The kernels call device code in
-# KQED_cuda, and nvlink can lose device code that is split over two static
-# archives, which shows up as undefined __cudaRegisterLinkedBinary_* symbols.
-# Every executable links this library directly (see hlbl_executable()).
+# GPU kernels from cvc (kernels/VENDORED.md). Must be OBJECT, not STATIC: the
+# kernels call device code in KQED_cuda, and nvlink can lose device code split
+# over two static archives (undefined __cudaRegisterLinkedBinary_* symbols).
+# Every executable links it directly (hlbl_executable()).
 # ---------------------------------------------------------------------------
 add_library(hlbl_kernels_obj OBJECT
   kernels/cuda_lattice.cu
@@ -44,11 +42,11 @@ set_target_properties(hlbl_kernels_obj PROPERTIES
   POSITION_INDEPENDENT_CODE ON)
 
 # ---------------------------------------------------------------------------
-# hlbl_core: geometry, gamma tables, schedule, contraction, cache, output and
-# the driver loop. Needs CUDA, MPI, KQED and HDF5, but not tmLQCD.
+# hlbl_core: everything but the solver. Needs CUDA, MPI, KQED and HDF5.
 # ---------------------------------------------------------------------------
 add_library(hlbl_core STATIC
   src/gamma.cpp
+  src/input.cpp
   src/schedule.cpp
   src/geometry.cpp
   src/contract.cpp
@@ -59,8 +57,7 @@ add_library(hlbl_core STATIC
 target_include_directories(hlbl_core PUBLIC include)
 target_link_libraries(hlbl_core PUBLIC hlbl_kernels_obj HDF5::HDF5)
 
-# Git revision, stored in every result file. Re-run cmake after committing to
-# update it.
+# Git revision for the result files; re-run cmake after committing.
 execute_process(
   COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} describe --always --dirty --abbrev=12
   OUTPUT_VARIABLE HLBL_GIT_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -72,7 +69,7 @@ set_source_files_properties(src/output.cpp PROPERTIES
   COMPILE_DEFINITIONS HLBL_GIT_REVISION="${HLBL_GIT_REVISION}")
 
 # ---------------------------------------------------------------------------
-# hlbl_solver: the tmLQCD/QUDA interface. Needs tmLQCD (which brings QUDA).
+# hlbl_solver: the tmLQCD/QUDA interface.
 # ---------------------------------------------------------------------------
 if (HLBL_WITH_TMLQCD)
   # tmLQCDConfig.cmake calls find_dependency() without including this
@@ -106,6 +103,7 @@ if (HLBL_WITH_TMLQCD)
 endif()
 
 hlbl_test(test_schedule)
+hlbl_test(test_input)
 hlbl_test(test_gamma)
 hlbl_test(test_lattice)
 hlbl_test(test_contract_random)
@@ -123,9 +121,23 @@ endif()
 # The whole program on random fields (1 shift: 15 + 65 = 80 pairs)
 add_test(NAME hypercube_random_fields
   COMMAND hlbl_hypercube --random-fields --lattice 6 6 6 6 --stride 1 --steps 1
+          --muon-mass 105.6583745 --lattice-spacing 0.07957
           --out hypercube_random_fields.h5)
 set_tests_properties(hypercube_random_fields PROPERTIES
   PASS_REGULAR_EXPRESSION "done: 80 pairs")
+
+# The checks of a dummy run, on random fields
+add_test(NAME hypercube_dummy_run
+  COMMAND hlbl_hypercube --dummy-run --in ${CMAKE_CURRENT_SOURCE_DIR}/sanity_check/multi_chain.input)
+set_tests_properties(hypercube_dummy_run PROPERTIES
+  PASS_REGULAR_EXPRESSION "dummy run: all checks passed")
+
+# Two chains from an input file (80 + 130 pairs; the second starts at window 1)
+add_test(NAME hypercube_random_fields_multi
+  COMMAND hlbl_hypercube --in ${CMAKE_CURRENT_SOURCE_DIR}/sanity_check/multi_chain.input
+          --out hypercube_random_fields_multi.h5)
+set_tests_properties(hypercube_random_fields_multi PROPERTIES
+  PASS_REGULAR_EXPRESSION "done: 210 pairs \\(210 results\\) in 2 chains")
 
 add_test(NAME compare_schedule
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/compare_schedule.sh

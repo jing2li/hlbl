@@ -1,12 +1,11 @@
-// check_pair: solves two point sources on a real gauge configuration with
-// tmLQCD/QUDA, contracts the pair they form, and prints kernel_sum for each
-// flavour. A manual check, not part of ctest: it needs a gauge configuration
-// and an invert.input in the working directory (see scripts/gen_invert_input.sh).
+// check_pair: solves two point sources on a real gauge configuration, contracts
+// their pair and prints kernel_sum per flavour. Not in ctest: needs a gauge
+// configuration and invert.input (scripts/gen_invert_input.sh).
 //
-//   check_pair [n [plaquette]]
+//   check_pair --muon-mass MeV --lattice-spacing fm [n [plaquette]]
 //
-// The pair is (origin, origin + n*(1,1,1,1)); n defaults to 1. If plaquette
-// is given, the run fails unless QUDA's mean plaquette agrees to 1e-9.
+// The pair is (origin, origin + n*(1,1,1,1)), n = 1 by default. With
+// plaquette, fails unless QUDA's mean plaquette agrees to 1e-9.
 
 #include <mpi.h>
 
@@ -15,8 +14,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include "hlbl/contract.hpp"
+#include "hlbl/input.hpp"
 #include "hlbl/mdarray.hpp"
 #include "hlbl/physics.hpp"
 #include "hlbl/solver.hpp"
@@ -47,11 +49,34 @@ int main(int argc, char** argv) {
   int status = 0;
 
   try {
-    int const stride = (argc > 1) ? std::atoi(argv[1]) : 1;
-    bool const have_expected = (argc > 2);
-    double const expected_plaquette = have_expected ? std::atof(argv[2]) : 0.0;
+    double muon_mass = 0, lattice_spacing = 0;
+    std::vector<std::string> positional;
+    for (int i = 1; i < argc; ++i) {
+      std::string const a = argv[i];
+      if (a == "--muon-mass" || a == "--lattice-spacing") {
+        if (i + 1 >= argc) throw std::runtime_error(a + " wants a value");
+        bool const mass = (a == "--muon-mass");
+        (mass ? muon_mass : lattice_spacing) =
+            parse_positive(argv[++i], a, mass ? "MeV" : "fm");
+      } else {
+        positional.push_back(a);
+      }
+    }
+    if (muon_mass <= 0 || lattice_spacing <= 0) {
+      throw std::runtime_error("check_pair needs --muon-mass and --lattice-spacing");
+    }
+    if (positional.size() > 2) {
+      throw std::runtime_error(
+          "usage: check_pair --muon-mass MeV --lattice-spacing fm [n [plaquette]]");
+    }
+    int const stride = positional.size() > 0 ? std::atoi(positional[0].c_str()) : 1;
+    bool const have_expected = positional.size() > 1;
+    double const expected_plaquette =
+        have_expected ? std::atof(positional[1].c_str()) : 0.0;
 
-    Solver solver(argc, argv);
+    // tmLQCD reads everything from invert.input; it gets no options
+    int stub_argc = 1;
+    Solver solver(stub_argc, argv);
     if (rank == 0) {
       std::printf("# [check_pair] configuration %d, local %d,%d,%d,%d, global %d,%d,%d,%d\n",
                   solver.nconf(), solver.lattice().local()[0],
@@ -64,8 +89,8 @@ int main(int argc, char** argv) {
     solver.read_gauge();
     solver.warm_up();  // QUDA gauge load and multigrid setup
 
-    // Print which GPU each rank uses (QUDA picks it during warm_up). Each
-    // rank of a node should show a different PCI bus id.
+    // The GPU of each rank (QUDA picks it in warm_up); the ranks of a node
+    // should show different PCI bus ids.
     {
       int dev = -1;
       cudaGetDevice(&dev);
@@ -95,9 +120,12 @@ int main(int argc, char** argv) {
     Vec4 gsx{0, 0, 0, 0};
     Vec4 yv{stride, stride, stride, stride};
     Vec4 gsy = add(gsx, yv);
+    double const x_unit = xunit(muon_mass, lattice_spacing);
     if (rank == 0) {
       std::printf("# [check_pair] pair x=(%d,%d,%d,%d) y=(%d,%d,%d,%d)\n", gsx[0],
                   gsx[1], gsx[2], gsx[3], gsy[0], gsy[1], gsy[2], gsy[3]);
+      std::printf("# [check_pair] muon mass %.10g MeV, lattice spacing %.10g fm: "
+                  "xunit = %.10g\n", muon_mass, lattice_spacing, x_unit);
     }
 
     DeviceBuffer<double> d_fwd_src = invert_pair(solver, gsx);
@@ -105,7 +133,7 @@ int main(int argc, char** argv) {
 
     Contractor contractor(solver.lattice(), kqed_t);
     auto result = contractor.kernel_sum(d_fwd_src.get(), d_fwd_y.get(), gsx,
-                                         yv, xunit());
+                                         yv, x_unit);
 
     if (rank == 0) {
       std::printf("# [check_pair] kernel_sum flavor0=%.18g flavor1=%.18g\n",

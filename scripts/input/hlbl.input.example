@@ -1,0 +1,37 @@
+# Input file of hlbl_hypercube:  srun hlbl_hypercube --in hlbl.input --out result.h5
+#
+# The chains run one after the other, after one gauge read and multigrid
+# setup. The command line overrides this file. Global lines are `key = value`,
+# chain lines `chain key=value ...` with vectors t,x,y,z.
+#
+# Check before submitting:
+#   python3.11 scripts/hlbl_mII_hypercube_schedule.py --in hlbl.input --procs 4 2 2 2 \
+#       --t-invert 40.6 --t-kernel-sum 2.8      # counts, overlaps, memory, cost; no GPU
+#   srun hlbl_hypercube --in hlbl.input --dummy-run --tune   # on the job's resources
+
+# ---- physics (required, except for --dry-run) ------------------------------
+muon_mass       = 105.6583745   # MeV
+lattice_spacing = 0.07957       # fm (cB211a.072.64)
+
+# ---- global options (all optional) -----------------------------------------
+cache  = host              # device | host: where the propagators are kept (default device)
+# out    = result.h5       # result file; --out overrides it
+# timing = result.timing.csv   # default: the result file name with .timing.csv
+
+# For --dry-run and --random-fields only (a real run takes them from invert.input):
+# random_fields = yes
+# lattice = 128,64,64,64   # also bounds `steps=auto` in a dry run
+# procs   = 2,2,2,2
+# flavors = 2
+
+# ---- chains ----------------------------------------------------------------
+# start    (required) first source, global coordinates
+# dir      (required) step direction, a sign vector (+-1,+-1,+-1,+-1)
+# stride   (required) n: every pair has |y| = 2n
+# steps    K: windows 0..K. Default auto: as many as fit before sources wrap
+# windows  a:b runs windows a to b-1 (a: to the end, :b from 0), first solving
+#          again the earlier sources window a needs. To split a chain or restart.
+
+chain start=0,0,0,0    dir=1,1,1,1   stride=4 steps=30
+chain start=32,0,0,0   dir=1,-1,1,1  stride=4 steps=30 windows=10:20
+chain start=0,16,0,0   dir=1,1,1,1   stride=6

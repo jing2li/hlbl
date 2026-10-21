@@ -1,0 +1,12 @@
+# Two chains on random fields (ctest hypercube_random_fields_multi).
+random_fields = yes
+lattice = 6,6,6,6
+procs   = 1,1,1,1
+cache   = host
+muon_mass       = 105.6583745   # MeV
+lattice_spacing = 0.07957       # fm
+
+# window 0 and 1: 16 + 15 propagators, 15 + 65 = 80 pairs
+chain start=0,0,0,0 dir=1,1,1,1  stride=1 steps=1
+# windows 1 and 2 of three: 65 + 65 = 130 pairs (window 0 sources are solved again)
+chain start=3,0,0,0 dir=1,-1,1,1 stride=1 steps=2 windows=1:

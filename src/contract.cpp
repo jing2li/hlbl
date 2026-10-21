@@ -33,6 +33,9 @@ void Contractor::compute_dzu_dzsu(const double* d_fwd_src,
   cu_dzu_dzsu(d_dzu_.get(), d_dzsu_.get(), d_fwd_src, d_fwd_y, iflavor,
               to_coord(lattice_.proc_coords()), to_coord(gsx),
               to_geom(lattice_.global()), to_geom(lattice_.local()));
+  // a failed launch is only reported here; errors while the kernel runs are
+  // reported by the copy below
+  check_cuda(cudaGetLastError(), "cu_dzu_dzsu launch");
 
   std::array<double, kDzuLen> local_dzu;
   std::array<double, kDzsuLen> local_dzsu;
@@ -84,6 +87,7 @@ double Contractor::compute_4pt(const double* d_fwd_src, const double* d_fwd_y,
                       to_coord(lattice_.proc_coords()), to_coord(gsx),
                       d_xunit, to_coord(yv), kqed_t_,
                       to_geom(lattice_.global()), to_geom(lattice_.local()));
+  check_cuda(cudaGetLastError(), "cu_4pt_contraction launch");
 
   double local = 0.0;
   d_kernel_sum_.copy_to_host(&local, 1);
@@ -102,6 +106,34 @@ std::array<double, 2> Contractor::kernel_sum(const double* d_fwd_src,
     result[iflavor] = compute_4pt(d_fwd_src, d_fwd_y, gsx, iflavor, xunit, yv);
   }
   return result;
+}
+
+std::size_t Contractor::reserve_kernel_memory() {
+  std::size_t free_before = 0, free_after = 0, total = 0;
+  check_cuda(cudaDeviceSynchronize(), "cudaDeviceSynchronize");
+  check_cuda(cudaMemGetInfo(&free_before, &total), "cudaMemGetInfo");
+  {
+    // the values do not matter; one block serves as both propagators
+    Geom const tiny{2, 2, 2, 2};
+    Coord const zero{0, 0, 0, 0}, yv{1, 1, 1, 1};
+    DeviceBuffer<double> block(2 * 12 * 24 * 16);
+    block.zero();
+    d_dzu_.zero();
+    d_dzsu_.zero();
+    d_g_dzu_.zero();
+    d_g_dzsu_.zero();
+    d_kernel_sum_.zero();
+    cu_dzu_dzsu(d_dzu_.get(), d_dzsu_.get(), block.get(), block.get(), 0, zero,
+                zero, tiny, tiny);
+    check_cuda(cudaGetLastError(), "cu_dzu_dzsu launch");
+    cu_4pt_contraction(d_kernel_sum_.get(), d_g_dzu_.get(), d_g_dzsu_.get(),
+                        block.get(), block.get(), 0, zero, zero, Pair{1.0, 0.0},
+                        yv, kqed_t_, tiny, tiny);
+    check_cuda(cudaGetLastError(), "cu_4pt_contraction launch");
+    check_cuda(cudaDeviceSynchronize(), "contraction kernels");
+  }
+  check_cuda(cudaMemGetInfo(&free_after, &total), "cudaMemGetInfo");
+  return free_before > free_after ? free_before - free_after : 0;
 }
 
 }  // namespace hlbl

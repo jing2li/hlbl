@@ -1,8 +1,8 @@
 #pragma once
 
-// The sliding-hypercube schedule: which sources to solve and which pairs to
-// contract. It must stay in step with scripts/hlbl_mII_hypercube_schedule.py
-// (checked by scripts/compare_schedule.sh). See the README for the scheme.
+// The sliding-hypercube schedule (see the README): which sources to solve and
+// which pairs to contract. Must match scripts/hlbl_mII_hypercube_schedule.py
+// (scripts/compare_schedule.sh checks).
 
 #include <array>
 #include <stdexcept>
@@ -16,7 +16,8 @@ namespace hlbl {
 // The 16 sign vectors (+-1,+-1,+-1,+-1).
 std::array<Vec4, 16> sign_vectors();
 
-// A0 = {0} u (G \ {h}), in units of the stride.
+// A0 = {0} u (G \ {h}) in units of the stride, in solve order: that of
+// h = (1,1,1,1), reflected by h, which gives a cache peak of 16 for every h.
 std::vector<Vec4> window_offsets(const Vec4& h);
 
 struct Source {
@@ -59,13 +60,11 @@ int max_steps_without_wrap(const Vec4& h, int stride, const Vec4& lattice,
                             const Vec4& origin = {0, 0, 0, 0},
                             int cap = 10000);
 
-// Order of solves and contractions. A propagator is freed as soon as its last
-// pair is done in every mode; the modes differ in how many are alive at once.
-//   kInterleaved  solve a source, contract its pairs at once. Peak: 16.
-//                 This is what the driver does.
-//   kSerial       solve a whole window, then contract it. Peak: 30.
-//   kPipelined    solve window k+1 while window k is contracted. Peak: 45.
-enum class Mode { kSerial, kPipelined, kInterleaved };
+// Order of solves and contractions; a propagator is freed after its last pair.
+//   kInterleaved  contract each source right after its solve. Peak 16. The
+//                 driver's order.
+//   kSerial       solve a whole window, then contract it. Peak 30.
+enum class Mode { kSerial, kInterleaved };
 
 struct ScheduleStats {
   long long n_propagators = 0;
@@ -75,9 +74,8 @@ struct ScheduleStats {
   int peak_cache = 0;           // max source positions held at once
 };
 
-// Counts solves, pairs and the peak cache size for the given mode, without
-// computing anything. Throws std::runtime_error if a propagator is still
-// cached after its last pair.
+// Counts solves, pairs and the cache peak of `mode` without computing
+// anything. Throws std::runtime_error if a propagator outlives its last pair.
 ScheduleStats simulate(const Schedule& steps, int n_flavors, Mode mode);
 
 }  // namespace hlbl

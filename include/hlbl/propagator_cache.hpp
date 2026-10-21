@@ -1,16 +1,13 @@
 #pragma once
 
-// The propagators of the sources the schedule still needs.
+// The propagators the schedule still needs. A position is inserted once, after
+// its solve, and freed after its last pair (`pending` counts them). One cache
+// serves a list of chains: reset() starts the next one and keeps the buffers.
 //
-// A position is inserted once (after its solve) and freed when the last pair
-// that uses it is done. The number of pairs per position is known from the
-// schedule and given to the constructor (`pending`).
-//
-// Where the blocks live:
-//   kDevice  on the GPU; contractions read them in place.
-//   kHost    in pinned host memory. A contraction first copies the two blocks
-//            it needs into two device staging slots. A third device block is
-//            the target of the solve.
+//   kDevice  blocks on the GPU, read in place.
+//   kHost    blocks in pinned host memory. A contraction copies its two blocks
+//            to two device staging slots; a third device block is the solve
+//            target.
 
 #include <cstddef>
 #include <map>
@@ -29,16 +26,19 @@ class PropagatorCache {
   // block_len: doubles per position (see block_length()).
   // pending: for each position, the number of pairs it takes part in.
   PropagatorCache(Residency residency, std::size_t block_len,
-                  std::map<Vec4, int> pending);
+                  std::map<Vec4, int> pending = {});
+
+  // Starts a new run with a new `pending`; the cache must be empty. Resets
+  // the peak.
+  void reset(std::map<Vec4, int> pending);
 
   // Insert in two steps: begin_insert returns a device buffer, the solve
   // fills it, end_insert stores it.
   DeviceBuffer<double>& begin_insert(const Vec4& position);
   void end_insert(const Vec4& position);
 
-  // The position's block on the device. For kHost it is copied into staging
-  // slot 0 or 1 (skipped if the slot already holds it); the pointer is valid
-  // until the next call with the same slot.
+  // The position's block on the device. kHost copies it into staging slot 0
+  // or 1 unless already there; valid until the next call with that slot.
   const double* device_ptr(const Vec4& position, int slot);
 
   // A pair is done; frees either position if this was its last pair.
@@ -63,8 +63,7 @@ class PropagatorCache {
   std::map<Vec4, Entry> entries_;
   int peak_ = 0;
 
-  // kHost only: freed pinned blocks are kept and reused, because
-  // cudaMallocHost is slow.
+  // kHost only: freed pinned blocks, reused because cudaMallocHost is slow
   std::vector<PinnedBuffer<double>> pool_;
 
   // kHost only: allocated on first use

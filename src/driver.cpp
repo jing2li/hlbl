@@ -13,20 +13,23 @@
 
 namespace hlbl {
 
-std::vector<PairResult> run_schedule(const Lattice& lattice,
-                                      const Schedule& schedule,
-                                      const RunOptions& options,
-                                      PropagatorProvider& provider,
-                                      Contractor& contractor,
-                                      ResultWriter* writer, TimingLog* timing,
-                                      RunStats* stats) {
+namespace {
+
+// One chain, using `cache`, which must be empty. Appends the results to
+// `results` and returns the chain's own statistics.
+RunStats run_chain(int chain, int n_chains, const ChainTask& task,
+                   const Lattice& lattice, const RunOptions& options,
+                   PropagatorProvider& provider, Contractor& contractor,
+                   ResultWriter* writer, TimingLog* timing,
+                   PropagatorCache& cache, std::vector<PairResult>& results) {
+  Schedule const& schedule = task.schedule;
   int const n_windows = static_cast<int>(schedule.size());
-  int const begin = options.window_begin;
-  int const end = options.window_end < 0
-                      ? n_windows
-                      : std::min(options.window_end, n_windows);
+  int const begin = task.window_begin;
+  int const end = task.window_end < 0 ? n_windows
+                                      : std::min(task.window_end, n_windows);
   if (begin < 0 || begin >= end) {
-    throw std::runtime_error("run_schedule: empty window range");
+    throw std::runtime_error("run_chains: chain " + std::to_string(chain) +
+                             ": empty window range");
   }
   Vec4 const global = lattice.global();
   auto wrap = [&](const Vec4& p) { return mod_pos(p, global); };
@@ -56,10 +59,16 @@ std::vector<PairResult> run_schedule(const Lattice& lattice,
     }
   }
 
-  PropagatorCache cache(options.residency, block_length(lattice), pending);
+  cache.reset(std::move(pending));
   RunStats local_stats;
   int rank = 0;
   MPI_Comm_rank(lattice.cart_comm(), &rank);
+  if (options.verbose && rank == 0) {
+    std::printf("# [hlbl] chain %d of %d: windows %d to %d of %d\n", chain,
+                n_chains, begin, end - 1, n_windows - 1);
+    std::fflush(stdout);
+  }
+  double const chain_t0 = MPI_Wtime();
 
   auto solve = [&](int window, const Vec4& position) {
     Vec4 const site = wrap(position);
@@ -71,10 +80,9 @@ std::vector<PairResult> run_schedule(const Lattice& lattice,
     local_stats.positions_solved++;
     local_stats.iterations += iterations;
     local_stats.seconds_solve += dt;
-    if (timing) timing->solve(window, site, dt, iterations);
+    if (timing) timing->solve(chain, window, site, dt, iterations);
   };
 
-  std::vector<PairResult> results;
   for (const Vec4& position : preload) solve(begin - 1, position);
 
   for (int k = begin; k < end; ++k) {
@@ -100,12 +108,13 @@ std::vector<PairResult> run_schedule(const Lattice& lattice,
         r.x = gx;
         r.y = gy;
         r.yv = yv;
+        r.chain = chain;
         r.window = k;
         r.kernel_sum = ks;
         rows.push_back(r);
         local_stats.pairs++;
         local_stats.seconds_kernel_sum += dt;
-        if (timing) timing->kernel_sum(k, gx, gy, dt);
+        if (timing) timing->kernel_sum(chain, k, gx, gy, dt);
 
         cache.pair_done(q, src.position);
       }
@@ -113,18 +122,70 @@ std::vector<PairResult> run_schedule(const Lattice& lattice,
     if (writer) writer->append(rows);
     results.insert(results.end(), rows.begin(), rows.end());
     if (options.verbose && rank == 0) {
-      std::printf("# [hlbl] window %d: %zu pairs, cache %d (peak %d)\n", k,
-                  rows.size(), cache.size(), cache.peak());
+      std::printf("# [hlbl] chain %d window %d: %zu pairs, cache %d (peak %d)\n",
+                  chain, k, rows.size(), cache.size(), cache.peak());
       std::fflush(stdout);
     }
   }
 
   if (cache.size() != 0) {
-    throw std::logic_error("run_schedule: propagators left in the cache");
+    throw std::logic_error("run_chains: propagators left in the cache");
   }
   local_stats.cache_peak = cache.peak();
-  if (stats) *stats = local_stats;
+  if (options.verbose && rank == 0) {
+    std::printf("# [hlbl] chain %d done: %d pairs, %d positions solved, %.1f s\n",
+                chain, local_stats.pairs, local_stats.positions_solved,
+                MPI_Wtime() - chain_t0);
+    std::fflush(stdout);
+  }
+  return local_stats;
+}
+
+}  // namespace
+
+std::vector<PairResult> run_chains(const Lattice& lattice,
+                                    const std::vector<ChainTask>& chains,
+                                    const RunOptions& options,
+                                    PropagatorProvider& provider,
+                                    Contractor& contractor,
+                                    ResultWriter* writer, TimingLog* timing,
+                                    RunStats* stats) {
+  if (chains.empty()) throw std::runtime_error("run_chains: no chains");
+  if (!(options.xunit > 0)) {
+    throw std::runtime_error("run_chains: RunOptions::xunit (m_mu a) is not set");
+  }
+  // one cache for all chains: its pinned and device buffers are reused
+  PropagatorCache cache(options.residency, block_length(lattice));
+  RunStats total;
+  std::vector<PairResult> results;
+  int const n_chains = static_cast<int>(chains.size());
+  for (int c = 0; c < n_chains; ++c) {
+    RunStats s = run_chain(c, n_chains, chains[c], lattice, options, provider,
+                           contractor, writer, timing, cache, results);
+    total.positions_solved += s.positions_solved;
+    total.iterations += s.iterations;
+    total.pairs += s.pairs;
+    total.cache_peak = std::max(total.cache_peak, s.cache_peak);
+    total.seconds_solve += s.seconds_solve;
+    total.seconds_kernel_sum += s.seconds_kernel_sum;
+  }
+  if (stats) *stats = total;
   return results;
+}
+
+std::vector<PairResult> run_schedule(const Lattice& lattice,
+                                      const Schedule& schedule,
+                                      const RunOptions& options,
+                                      PropagatorProvider& provider,
+                                      Contractor& contractor,
+                                      ResultWriter* writer, TimingLog* timing,
+                                      RunStats* stats) {
+  ChainTask task;
+  task.schedule = schedule;
+  task.window_begin = options.window_begin;
+  task.window_end = options.window_end;
+  return run_chains(lattice, {task}, options, provider, contractor, writer,
+                    timing, stats);
 }
 
 namespace {
@@ -146,11 +207,11 @@ std::size_t node_memory_available() {
 
 }  // namespace
 
-MemoryEstimate estimate_memory(const Lattice& lattice, const Schedule& schedule,
+MemoryEstimate estimate_memory(const Lattice& lattice, int peak_positions,
                                PropagatorCache::Residency residency) {
   MemoryEstimate e;
   e.bytes_per_position = block_length(lattice) * sizeof(double);
-  e.peak_positions = simulate(schedule, 2, Mode::kInterleaved).peak_cache;
+  e.peak_positions = peak_positions;
 
   std::size_t free_dev = 0, total_dev = 0;
   check_cuda(cudaMemGetInfo(&free_dev, &total_dev), "cudaMemGetInfo");

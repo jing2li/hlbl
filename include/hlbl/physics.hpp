@@ -1,18 +1,16 @@
 #pragma once
 
-// Physical constants for the QED kernel (same values as cvc).
+// Unit conversion for the QED kernel. The muon mass and lattice spacing are
+// run inputs; only hbar c is built in.
 
 namespace hlbl {
 
-// Muon mass in lattice-natural units, MeV / (MeV.fm).
-inline constexpr double kMuonMassMeV = 105.6583745;
-inline constexpr double kMuonMassMeVFm = 197.3269804;
-inline constexpr double kMuonMass = kMuonMassMeV / kMuonMassMeVFm;
+// hbar c in MeV fm (same value as cvc).
+inline constexpr double kHbarCMeVFm = 197.3269804;
 
-// Lattice spacing of cB211a.072.64, in fm.
-inline constexpr double kLatticeSpacing = 0.07957;
-
-// Converts lattice units to units of the muon mass.
-inline constexpr double xunit() { return kMuonMass * kLatticeSpacing; }
+// xunit = m_mu a converts lattice units to units of the muon mass.
+inline constexpr double xunit(double muon_mass_mev, double lattice_spacing_fm) {
+  return muon_mass_mev / kHbarCMeVFm * lattice_spacing_fm;
+}
 
 }  // namespace hlbl

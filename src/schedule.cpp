@@ -45,9 +45,13 @@ std::array<Vec4, 16> sign_vectors() {
 }
 
 std::vector<Vec4> window_offsets(const Vec4& h) {
+  // A reflection keeps the pair separations, so the schedule of h mirrors that
+  // of (1,1,1,1), peak 16 included. G \ {h} in sign_vectors() order would
+  // peak at 17 to 25.
   std::vector<Vec4> offsets = {Vec4{0, 0, 0, 0}};
   for (const auto& g : sign_vectors()) {
-    if (g != h) offsets.push_back(g);
+    if (g == Vec4{1, 1, 1, 1}) continue;
+    offsets.push_back({h[0] * g[0], h[1] * g[1], h[2] * g[2], h[3] * g[3]});
   }
   return offsets;
 }
@@ -184,8 +188,7 @@ ScheduleStats simulate(const Schedule& steps, int n_flavors, Mode mode) {
     }
   };
 
-  for (std::size_t k = 0; k < steps.size(); ++k) {
-    const Step& step = steps[k];
+  for (const Step& step : steps) {
     if (mode == Mode::kInterleaved) {
       for (const auto& src : step.sources) {
         invert(src.position);
@@ -193,12 +196,7 @@ ScheduleStats simulate(const Schedule& steps, int n_flavors, Mode mode) {
       }
       continue;
     }
-    if (mode == Mode::kSerial || k == 0) {
-      for (const auto& src : step.sources) invert(src.position);
-    }
-    if (mode == Mode::kPipelined && k + 1 < steps.size()) {
-      for (const auto& src : steps[k + 1].sources) invert(src.position);
-    }
+    for (const auto& src : step.sources) invert(src.position);
     for (const auto& src : step.sources) {
       for (const auto& q : src.partners) contract(q, src.position);
     }

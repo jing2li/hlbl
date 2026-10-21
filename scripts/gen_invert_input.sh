@@ -1,19 +1,14 @@
 #!/bin/bash
-# gen_invert_input.sh -- write the tmLQCD input (invert.input) a run needs.
+# gen_invert_input.sh -- write invert.input, the tmLQCD input of a run
+# (lattice, process grid, operators, multigrid), from
+# scripts/input/invert.input.in.
 #
 #   gen_invert_input.sh -o RUNDIR -T 128 -L 64 -p NT,NX,NY,NZ [options]
 #
-# tmLQCD reads invert.input from the working directory. It sets the lattice,
-# process grid, operators and multigrid, so it is the only input file the
-# programs need. The template is scripts/input/invert.input.in.
-#
-# Checks done here:
-#  - every process count divides its lattice extent;
-#  - every local extent is a multiple of 2 * prod(MGBlockSizes) of the
-#    template (otherwise the multigrid aborts with "Blocking error").
-#
-# Memory: the multigrid setup needs a local volume of at most 64x32x32x32
-# per GPU (16 GPUs for 128x64^3).
+# Checks that every process count divides its extent and that every local
+# extent is a multiple of 2 * prod(MGBlockSizes) (else the multigrid aborts
+# with "Blocking error"). The multigrid fits a local volume of at most
+# 64x32x32x32 per GPU (16 GPUs for 128x64^3).
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -24,7 +19,7 @@ while getopts "o:T:L:p:n:j:g:h" opt; do
   case $opt in
     o) outdir=$OPTARG ;; T) T=$OPTARG ;; L) L=$OPTARG ;; p) procs=$OPTARG ;;
     n) nconf=$OPTARG ;; j) threads=$OPTARG ;; g) gauge=$OPTARG ;;
-    h|*) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    h|*) sed -n '2,/^[^#]/s/^# \{0,1\}//p' "$0"
          echo "options: -o DIR -T N -L N -p NT,NX,NY,NZ [-n conf] [-j omp threads] [-g gauge prefix]"
          exit 0 ;;
   esac

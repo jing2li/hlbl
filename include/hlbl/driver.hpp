@@ -1,7 +1,7 @@
 #pragma once
 
-// The schedule loop. For each new source: solve it, contract it with its
-// partners, and free any propagator whose last pair is done.
+// The schedule loop: solve each new source, contract it with its partners,
+// free propagators whose last pair is done.
 
 #include <cstddef>
 #include <vector>
@@ -9,7 +9,6 @@
 #include "hlbl/contract.hpp"
 #include "hlbl/lattice.hpp"
 #include "hlbl/output.hpp"
-#include "hlbl/physics.hpp"
 #include "hlbl/propagator_cache.hpp"
 #include "hlbl/provider.hpp"
 #include "hlbl/schedule.hpp"
@@ -17,13 +16,13 @@
 namespace hlbl {
 
 struct RunOptions {
-  // Run windows [window_begin, window_end); window_end < 0 means to the end.
-  // If window_begin > 0, the earlier sources it needs are solved again first.
+  // Window range as in ChainTask; run_schedule only (run_chains uses each
+  // task's own).
   int window_begin = 0;
   int window_end = -1;
   PropagatorCache::Residency residency = PropagatorCache::Residency::kDevice;
-  double xunit = hlbl::xunit();
-  bool verbose = false;  // print one line per window on rank 0
+  double xunit = 0;      // m_mu a (hlbl::xunit()); required
+  bool verbose = false;  // print one line per chain and window on rank 0
 };
 
 struct RunStats {
@@ -35,9 +34,28 @@ struct RunStats {
   double seconds_kernel_sum = 0;
 };
 
-// Runs `schedule` (from build_schedule) and returns every pair's result,
-// the same on all ranks. `writer` and `timing` may be null; pass them on
-// rank 0 only. The writer gets each window's rows when the window is done.
+// One chain of a run_chains call.
+struct ChainTask {
+  Schedule schedule;        // from build_schedule
+  // Windows [window_begin, window_end); window_end < 0: to the end. The
+  // earlier sources window_begin needs are solved again first.
+  int window_begin = 0;
+  int window_end = -1;
+};
+
+// Runs the chains in order with one shared cache (memory of the largest chain)
+// and returns every pair's result on all ranks. `writer` and `timing` may be
+// null and are for rank 0 only; the writer gets each window's rows when it is
+// done. `stats` are totals, with cache_peak the largest.
+std::vector<PairResult> run_chains(const Lattice& lattice,
+                                    const std::vector<ChainTask>& chains,
+                                    const RunOptions& options,
+                                    PropagatorProvider& provider,
+                                    Contractor& contractor,
+                                    ResultWriter* writer, TimingLog* timing,
+                                    RunStats* stats = nullptr);
+
+// One chain (chain 0) with the window range of `options`.
 std::vector<PairResult> run_schedule(const Lattice& lattice,
                                       const Schedule& schedule,
                                       const RunOptions& options,
@@ -46,10 +64,10 @@ std::vector<PairResult> run_schedule(const Lattice& lattice,
                                       ResultWriter* writer, TimingLog* timing,
                                       RunStats* stats = nullptr);
 
-// Memory the run needs on this rank, against what is available.
-//   device cache: the peak number of positions on the GPU.
-//   host cache:   the peak number in pinned host memory, plus 3 blocks on the
-//                 GPU (one solve target, two staging slots).
+// Memory a run needs on this rank, and what is available.
+//   device cache: peak positions on the GPU.
+//   host cache:   peak positions in pinned host memory, plus 3 blocks on the
+//                 GPU (solve target, two staging slots).
 struct MemoryEstimate {
   std::size_t bytes_per_position = 0;  // one position, on this rank
   int peak_positions = 0;
@@ -60,9 +78,11 @@ struct MemoryEstimate {
   }
 };
 
-// Collective over all ranks. Call after the solver is set up, so the free
-// device memory is what is left after QUDA's multigrid.
-MemoryEstimate estimate_memory(const Lattice& lattice, const Schedule& schedule,
+// `peak_positions`: the largest cache peak of the chains (simulate(),
+// kInterleaved). Collective. Call after the solver setup and
+// Contractor::reserve_kernel_memory(), so free device memory excludes QUDA's
+// multigrid and the kernels' stack. Used by --dummy-run only.
+MemoryEstimate estimate_memory(const Lattice& lattice, int peak_positions,
                                PropagatorCache::Residency residency);
 
 }  // namespace hlbl

@@ -1,24 +1,24 @@
-// Runs the schedule loop (run_schedule) on random propagators. Needs one GPU
-// but no solver or gauge field. Checks that:
-//  - the pair count and cache peak agree with simulate();
-//  - results are the same with a device cache and a host cache;
-//  - a pair equals a direct Contractor call on regenerated fields;
-//  - two window ranges together reproduce the whole run;
-//  - the HDF5 file holds exactly the computed rows.
+// The schedule loop on random propagators (one GPU, no solver). Checks pair
+// count and cache peak against simulate(), device vs host cache, pairs
+// against direct Contractor calls, two window ranges against the whole run,
+// two chains against independent runs, and the HDF5 files.
 
 #include "hlbl/driver.hpp"
 
 #include <hdf5.h>
 #include <mpi.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <tuple>
 #include <vector>
 
 #include "check.hpp"
 #include "hlbl/contract.hpp"
 #include "hlbl/lattice.hpp"
+#include "hlbl/physics.hpp"
 #include "hlbl/provider.hpp"
 #include "hlbl/schedule.hpp"
 
@@ -33,14 +33,44 @@ bool close(double a, double b) {
   return std::fabs(a - b) <= kTol * std::max(1.0, std::fabs(b));
 }
 
-using Key = std::pair<Vec4, Vec4>;
+using Key = std::tuple<int, Vec4, Vec4>;  // chain, x, y
 
 std::map<Key, PairResult> by_pair(const std::vector<PairResult>& rows) {
   std::map<Key, PairResult> m;
   for (const auto& r : rows) {
-    HLBL_CHECK(m.emplace(Key{r.x, r.y}, r).second);  // no pair twice
+    HLBL_CHECK(m.emplace(Key{r.chain, r.x, r.y}, r).second);  // no pair twice
   }
   return m;
+}
+
+Chain make_chain(const Vec4& start, const Vec4& dir, int stride, int steps,
+                 int window_begin, int window_end) {
+  Chain c;
+  c.start = start;
+  c.direction = dir;
+  c.stride = stride;
+  c.steps = steps;
+  c.window_begin = window_begin;
+  c.window_end = window_end;
+  return c;
+}
+
+// all values of an int dataset, and its dimensions
+std::vector<int> read_ints(hid_t file, const char* name,
+                           std::vector<hsize_t>& dims) {
+  hid_t ds = H5Dopen2(file, name, H5P_DEFAULT);
+  HLBL_CHECK(ds >= 0);
+  hid_t sp = H5Dget_space(ds);
+  dims.assign(H5Sget_simple_extent_ndims(sp), 0);
+  H5Sget_simple_extent_dims(sp, dims.data(), nullptr);
+  hsize_t n = 1;
+  for (hsize_t d : dims) n *= d;
+  std::vector<int> v(n);
+  HLBL_CHECK(H5Dread(ds, H5T_NATIVE_INT, H5S_ALL, H5S_ALL, H5P_DEFAULT,
+                     v.data()) >= 0);
+  H5Sclose(sp);
+  H5Dclose(ds);
+  return v;
 }
 
 void check_same(const std::vector<PairResult>& a,
@@ -50,6 +80,7 @@ void check_same(const std::vector<PairResult>& a,
   for (const auto& [key, ra] : ma) {
     auto it = mb.find(key);
     HLBL_CHECK(it != mb.end());
+    HLBL_CHECK(it->second.chain == ra.chain);
     HLBL_CHECK(it->second.window == ra.window);
     HLBL_CHECK(it->second.yv == ra.yv);
     for (int f = 0; f < 2; ++f) {
@@ -81,15 +112,17 @@ int main(int argc, char** argv) {
 
   // ---- whole run, device-resident cache, written to HDF5
   RunOptions opt;
+  opt.xunit = xunit(105.6583745, 0.07957);
   RunStats stats;
   std::vector<PairResult> dev;
   {
     RunInfo info;
     info.lattice = lat.global();
     info.procs = lat.procs();
-    info.direction = h;
-    info.stride = stride;
-    info.window_end = steps + 1;
+    info.chains = {make_chain(Vec4{0, 0, 0, 0}, h, stride, steps, 0, steps + 1)};
+    info.muon_mass = 105.6583745;
+    info.lattice_spacing = 0.07957;
+    info.xunit = opt.xunit;
     ResultWriter writer("test_driver_random.h5", info);
     TimingLog timing("test_driver_random.csv");
     dev = run_schedule(lat, schedule, opt, provider, contractor, &writer,
@@ -150,10 +183,87 @@ int main(int argc, char** argv) {
     HLBL_CHECK(sb.positions_solved > schedule[1].n_new() + schedule[2].n_new());
   }
 
+  // ---- two chains, the second from window 1: the same pairs as two
+  //      independent runs, with either cache, and the right HDF5 file
+  {
+    Vec4 const h2{1, -1, 1, 1}, start2{3, 0, 0, 0};
+    ChainTask t0, t1;
+    t0.schedule = schedule;
+    t1.schedule = build_schedule(h2, stride, 2, start2);
+    check_complete(t1.schedule, stride);
+    t1.window_begin = 1;
+    std::vector<ChainTask> const tasks = {t0, t1};
+
+    RunOptions o1 = opt;
+    o1.window_begin = 1;
+    RunStats s1;
+    auto second = run_schedule(lat, t1.schedule, o1, provider, contractor,
+                               nullptr, nullptr, &s1);
+    for (auto& r : second) r.chain = 1;
+    std::vector<PairResult> expected = dev;
+    expected.insert(expected.end(), second.begin(), second.end());
+
+    std::vector<PairResult> rows;
+    for (auto residency : {PropagatorCache::Residency::kDevice,
+                           PropagatorCache::Residency::kHost}) {
+      RunOptions o = opt;
+      o.residency = residency;
+      RunStats s;
+      RunInfo info;
+      info.lattice = lat.global();
+      info.procs = lat.procs();
+      info.chains = {make_chain(Vec4{0, 0, 0, 0}, h, stride, steps, 0, steps + 1),
+                     make_chain(start2, h2, stride, 2, 1, 3)};
+      {
+        ResultWriter writer("test_driver_random_multi.h5", info);
+        rows = run_chains(lat, tasks, o, provider, contractor, &writer, nullptr,
+                          &s);
+      }
+      check_same(expected, rows);
+      HLBL_CHECK(s.pairs == stats.pairs + s1.pairs);
+      HLBL_CHECK(s.positions_solved == stats.positions_solved + s1.positions_solved);
+      HLBL_CHECK(s.cache_peak == std::max(stats.cache_peak, s1.cache_peak));
+    }
+
+    // the file written last: chain column, chains table, no single-chain attributes
+    hid_t f = H5Fopen("test_driver_random_multi.h5", H5F_ACC_RDONLY, H5P_DEFAULT);
+    HLBL_CHECK(f >= 0);
+    std::vector<hsize_t> dims;
+    auto chain_col = read_ints(f, "chain", dims);
+    HLBL_CHECK(dims.size() == 1 && dims[0] == rows.size());
+    std::size_t n_second = 0;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      HLBL_CHECK(chain_col[i] == rows[i].chain);
+      n_second += chain_col[i] == 1;
+    }
+    HLBL_CHECK(n_second == second.size());
+    auto table = read_ints(f, "chains", dims);
+    HLBL_CHECK(dims.size() == 2 && dims[0] == 2 && dims[1] == 12);
+    int const row0[12] = {0, 0, 0, 0, 1, 1, 1, 1, stride, steps, 0, steps + 1};
+    int const row1[12] = {3, 0, 0, 0, 1, -1, 1, 1, stride, 2, 1, 3};
+    for (int k = 0; k < 12; ++k) {
+      HLBL_CHECK(table[k] == row0[k]);
+      HLBL_CHECK(table[12 + k] == row1[k]);
+    }
+    HLBL_CHECK(H5Aexists(f, "direction") == 0);
+    H5Fclose(f);
+  }
+
   // ---- the HDF5 file holds what was computed
   {
     hid_t f = H5Fopen("test_driver_random.h5", H5F_ACC_RDONLY, H5P_DEFAULT);
     HLBL_CHECK(f >= 0);
+    {
+      // one chain: all rows are chain 0, and the attributes of old files are there
+      std::vector<hsize_t> cdims;
+      auto chain_col = read_ints(f, "chain", cdims);
+      HLBL_CHECK(cdims.size() == 1 && cdims[0] == dev.size());
+      for (int c : chain_col) HLBL_CHECK(c == 0);
+      auto table = read_ints(f, "chains", cdims);
+      HLBL_CHECK(cdims.size() == 2 && cdims[0] == 1 && cdims[1] == 12);
+      HLBL_CHECK(table[8] == stride && table[9] == steps);
+      HLBL_CHECK(H5Aexists(f, "direction") > 0 && H5Aexists(f, "origin") > 0);
+    }
     hid_t ds = H5Dopen2(f, "kernel_sum", H5P_DEFAULT);
     HLBL_CHECK(ds >= 0);
     hid_t sp = H5Dget_space(ds);
@@ -174,6 +284,13 @@ int main(int argc, char** argv) {
     H5Aread(at, H5T_NATIVE_INT, &stride_read);
     HLBL_CHECK(stride_read == stride);
     H5Aclose(at);
+    // the physics inputs of the run
+    at = H5Aopen(f, "xunit", H5P_DEFAULT);
+    double xunit_read = 0;
+    H5Aread(at, H5T_NATIVE_DOUBLE, &xunit_read);
+    HLBL_CHECK(xunit_read == opt.xunit);
+    H5Aclose(at);
+    HLBL_CHECK(H5Aexists(f, "muon_mass_MeV") > 0 && H5Aexists(f, "lattice_spacing_fm") > 0);
     H5Fclose(f);
   }
 

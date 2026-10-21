@@ -1,7 +1,7 @@
 #pragma once
 
-// tmLQCD/QUDA solver interface. The geometry, process grid, gauge field and
-// operators all come from invert.input in the working directory.
+// tmLQCD/QUDA solver. Geometry, process grid, gauge field and operators come
+// from invert.input in the working directory.
 
 #include <array>
 #include <memory>
@@ -29,19 +29,18 @@ class Solver {
   // Reads the gauge configuration named in invert.input.
   void read_gauge();
 
-  // Does one dummy solve. This is where QUDA loads the gauge field and sets
-  // up the multigrid, so call it once before any timed solve.
+  // One dummy solve, where QUDA loads the gauge field and sets up the
+  // multigrid. Call it before any timed solve.
   void warm_up();
 
-  // {mean, spatial, temporal} plaquette of the gauge field QUDA holds. The
-  // mean should equal the value recorded in the gauge file.
+  // {mean, spatial, temporal} plaquette of QUDA's gauge field; the mean should
+  // match the gauge file.
   std::array<double, 3> plaquette() const;
 
-  // Solves for the 12 spin-colour components of a point source at global
-  // site gsx, with operator op_id (0: +mu, 1: -mu). The solutions
-  // (12 * 24 * local volume doubles) go into `dest` starting at `offset`.
-  // Call once per flavour, with offset = flavour * 12 * 24 * local volume.
-  // Returns the iterations summed over the 12 solves.
+  // Solves the 12 spin-colour components of a point source at global site gsx
+  // with operator op_id (0: +mu, 1: -mu). Writes 12 * 24 * local volume
+  // doubles to `dest` at `offset` (flavour times that length). Returns the
+  // summed iterations.
   int invert_point(const Vec4& gsx, int op_id, DeviceBuffer<double>& dest,
                     std::size_t offset);
 

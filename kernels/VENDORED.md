@@ -14,7 +14,7 @@ bugs here deliberately and record each change below.
 - `kqed_cuda_glue.cu` comes from cvc's `time_hlbl/`, which was untracked at
   copy time.
 
-| file | cvc path | sha256 |
+| file | cvc path | sha256 as copied |
 |---|---|---|
 | `cuda_lattice.cu` | `cuda_lattice.cu` | `ba787bc869d18e8e8f76bf88f16b3a8ac1ac679f8b147d225ccac45e82e8f74b` |
 | `cuda_lattice.h` | `cuda_lattice.h` | `7f3af22c66bd50c7db0470883e56de1db5d15282752887b292e1cdb82bbf7bdd` |
@@ -37,4 +37,21 @@ Both kernel files evaluate a single QED kernel, LΛ with Λ = 0.4
 
 ## Local modifications
 
-None.
+| date | commit | file | change |
+|---|---|---|---|
+| 2026-10-16 | `f7e4a90` | `hlbl_kernels/kernels.cu` | `prop_idx()` returns `size_t` and casts each term before multiplying. It returned `int` and multiplied in 32 bits; its largest value, 576 × the local volume, passes 2³¹ above 3.7 million local sites. Only the 2+2 code (`kernel_pi`, `kernel_4pt` of this file) uses it, and hlbl calls neither yet. |
+
+sha256 of `hlbl_kernels/kernels.cu` now:
+`e52f47dcbffab8d5bde5b21e00a3703e1def26bb995bce37b9573c82f958ea82`. The other
+files are as copied.
+
+## Changes in cvc since the copy (not taken)
+
+cvc's working tree, checked on 2026-10-20:
+
+- `cuda_lattice.h`: `CUDA_THREAD_DIM_1D` 32 → 128, the block size of the
+  `cuda_lattice.cu` launches.
+- `hlbl_kernels/kernels.cu`: the same `prop_idx` fix, plus two changes to the
+  2+2 code: the P2/P3 grid is clamped to `n_y` (`n_y > 88 ? 88 : n_y`), and the
+  shared `kerv` array of `kernel_4pt` is sized by `kernel_n` instead of 3.
+- `cuda_lattice.cu`: unchanged.
