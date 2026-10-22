@@ -122,17 +122,17 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
   ds_window_ = make_dataset(file, "window", H5T_NATIVE_INT, 0);
   ds_kernel_ = make_dataset(file, "kernel_sum", H5T_NATIVE_DOUBLE, 2);
 
-  constexpr hsize_t kChainCols = 12;
+  constexpr hsize_t kChainCols = 10;
   std::vector<int> table;
   for (const Chain& c : info.chains) {
     table.insert(table.end(), c.start.begin(), c.start.end());
     table.insert(table.end(), c.direction.begin(), c.direction.end());
-    for (int v : {c.stride, c.steps, c.window_begin, c.window_end}) table.push_back(v);
+    table.push_back(c.stride);
+    table.push_back(c.steps);
   }
   int_table(file, "chains", table, info.chains.size(), kChainCols);
   attr_string(file, "chains_columns",
-              "start0..3, dir0..3, stride, steps, window_begin, window_end; "
-              "row = chain index");
+              "start0..3, dir0..3, stride, steps; row = chain index");
 
   attr_ints(file, "lattice", info.lattice.data(), 4);
   attr_ints(file, "procs", info.procs.data(), 4);
@@ -146,8 +146,6 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
     attr_ints(file, "direction", c.direction.data(), 4);
     attr_ints(file, "origin", c.start.data(), 4);
     attr_int(file, "stride", c.stride);
-    attr_int(file, "window_begin", c.window_begin);
-    attr_int(file, "window_end", c.window_end);
   }
   attr_string(file, "kernel", info.kernel);
   attr_string(file, "hlbl_revision", HLBL_GIT_REVISION);

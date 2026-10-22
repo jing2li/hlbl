@@ -6,6 +6,7 @@
 
 #include <array>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -68,14 +69,22 @@ enum class Mode { kSerial, kInterleaved };
 
 struct ScheduleStats {
   long long n_propagators = 0;
-  long long n_solves = 0;       // n_propagators * 12 * n_flavors
+  long long n_solves = 0;       // n_propagators * 12 spin-colours * 2 flavours
   long long n_pairs = 0;
-  long long n_kernel_sums = 0;  // n_pairs * n_flavors
+  long long n_kernel_sums = 0;  // n_pairs * 2 flavours
   int peak_cache = 0;           // max source positions held at once
 };
 
 // Counts solves, pairs and the cache peak of `mode` without computing
 // anything. Throws std::runtime_error if a propagator outlives its last pair.
-ScheduleStats simulate(const Schedule& steps, int n_flavors, Mode mode);
+ScheduleStats simulate(const Schedule& steps, Mode mode);
+
+// The warning about sources and pairs in more than one chain (positions
+// wrapped onto `lattice`): a summary line, then up to 20 pairs of chains, each
+// with its first 10 shared sources and the window of each chain that solves
+// them. Empty if no chains overlap. Same lines as overlap_report() in
+// scripts/hlbl_mII_hypercube_schedule.py.
+std::vector<std::string> overlap_report(const std::vector<Schedule>& chains,
+                                        const Vec4& lattice);
 
 }  // namespace hlbl

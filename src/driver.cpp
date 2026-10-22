@@ -6,7 +6,6 @@
 #include <cstdio>
 #include <fstream>
 #include <map>
-#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -17,55 +16,28 @@ namespace {
 
 // One chain, using `cache`, which must be empty. Appends the results to
 // `results` and returns the chain's own statistics.
-RunStats run_chain(int chain, int n_chains, const ChainTask& task,
+RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
                    const Lattice& lattice, const RunOptions& options,
                    PropagatorProvider& provider, Contractor& contractor,
                    ResultWriter* writer, TimingLog* timing,
                    PropagatorCache& cache, std::vector<PairResult>& results) {
-  Schedule const& schedule = task.schedule;
   int const n_windows = static_cast<int>(schedule.size());
-  int const begin = task.window_begin;
-  int const end = task.window_end < 0 ? n_windows
-                                      : std::min(task.window_end, n_windows);
-  if (begin < 0 || begin >= end) {
-    throw std::runtime_error("run_chains: chain " + std::to_string(chain) +
-                             ": empty window range");
-  }
   Vec4 const global = lattice.global();
   auto wrap = [&](const Vec4& p) { return mod_pos(p, global); };
 
-  // Pairs per position within this range, and the positions from before the
-  // range that its pairs need (solved again first)
-  std::map<Vec4, int> pending;
-  std::set<Vec4> produced;
-  for (int k = begin; k < end; ++k) {
-    for (const Source& src : schedule[k].sources) {
-      produced.insert(src.position);
-      for (const Vec4& q : src.partners) {
-        pending[q]++;
-        pending[src.position]++;
-      }
-    }
+  std::map<Vec4, int> pending;  // pairs per position
+  for (const auto& [older, newer] : all_pairs(schedule)) {
+    pending[older]++;
+    pending[newer]++;
   }
-  std::vector<Vec4> preload;
-  std::set<Vec4> preload_set;
-  for (int k = begin; k < end; ++k) {
-    for (const Source& src : schedule[k].sources) {
-      for (const Vec4& q : src.partners) {
-        if (!produced.count(q) && preload_set.insert(q).second) {
-          preload.push_back(q);
-        }
-      }
-    }
-  }
-
   cache.reset(std::move(pending));
+
   RunStats local_stats;
   int rank = 0;
   MPI_Comm_rank(lattice.cart_comm(), &rank);
   if (options.verbose && rank == 0) {
-    std::printf("# [hlbl] chain %d of %d: windows %d to %d of %d\n", chain,
-                n_chains, begin, end - 1, n_windows - 1);
+    std::printf("# [hlbl] chain %d of %d: %d windows\n", chain, n_chains,
+                n_windows);
     std::fflush(stdout);
   }
   double const chain_t0 = MPI_Wtime();
@@ -83,9 +55,7 @@ RunStats run_chain(int chain, int n_chains, const ChainTask& task,
     if (timing) timing->solve(chain, window, site, dt, iterations);
   };
 
-  for (const Vec4& position : preload) solve(begin - 1, position);
-
-  for (int k = begin; k < end; ++k) {
+  for (int k = 0; k < n_windows; ++k) {
     std::vector<PairResult> rows;
     // Contract each source right after its solve, so propagators are freed
     // early and the cache stays small.
@@ -144,7 +114,7 @@ RunStats run_chain(int chain, int n_chains, const ChainTask& task,
 }  // namespace
 
 std::vector<PairResult> run_chains(const Lattice& lattice,
-                                    const std::vector<ChainTask>& chains,
+                                    const std::vector<Schedule>& chains,
                                     const RunOptions& options,
                                     PropagatorProvider& provider,
                                     Contractor& contractor,
@@ -171,21 +141,6 @@ std::vector<PairResult> run_chains(const Lattice& lattice,
   }
   if (stats) *stats = total;
   return results;
-}
-
-std::vector<PairResult> run_schedule(const Lattice& lattice,
-                                      const Schedule& schedule,
-                                      const RunOptions& options,
-                                      PropagatorProvider& provider,
-                                      Contractor& contractor,
-                                      ResultWriter* writer, TimingLog* timing,
-                                      RunStats* stats) {
-  ChainTask task;
-  task.schedule = schedule;
-  task.window_begin = options.window_begin;
-  task.window_end = options.window_end;
-  return run_chains(lattice, {task}, options, provider, contractor, writer,
-                    timing, stats);
 }
 
 namespace {

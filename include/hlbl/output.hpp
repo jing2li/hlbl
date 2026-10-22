@@ -27,8 +27,7 @@ struct RunInfo {
   Vec4 lattice{};    // global extents
   Vec4 procs{};
   int nconf = -1;    // gauge configuration number (-1: none, random fields)
-  // As run: steps resolved, window_end at most steps + 1.
-  std::vector<Chain> chains;
+  std::vector<Chain> chains;   // as run: steps resolved
   std::string kernel = "LLambda0.4";
   double muon_mass = 0;        // MeV
   double lattice_spacing = 0;  // fm
@@ -39,7 +38,7 @@ struct RunInfo {
 //   x[N][4], y[N][4], yv[N][4]  int
 //   chain[N], window[N]         int
 //   kernel_sum[N][2]            double  (flavour 0, 1)
-// plus the table chains[C][12], and RunInfo and the git revision as
+// plus the table chains[C][10], and RunInfo and the git revision as
 // attributes. Each append() is flushed, so a killed job keeps its finished
 // windows.
 class ResultWriter {
@@ -62,8 +61,7 @@ class ResultWriter {
 
 // One CSV row per solve and per kernel sum:
 //   kind,chain,window,x0..x3,y0..y3,seconds,iterations
-// A solve leaves y empty; a kernel sum leaves iterations empty. A source
-// solved again at a restart is logged with window = window_begin - 1.
+// A solve leaves y empty; a kernel sum leaves iterations empty.
 class TimingLog {
  public:
   explicit TimingLog(const std::string& path);

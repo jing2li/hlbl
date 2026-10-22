@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <map>
 #include <set>
+#include <tuple>
 
 namespace hlbl {
 
@@ -163,7 +165,8 @@ int max_steps_without_wrap(const Vec4& h, int stride, const Vec4& lattice,
   return cap;
 }
 
-ScheduleStats simulate(const Schedule& steps, int n_flavors, Mode mode) {
+ScheduleStats simulate(const Schedule& steps, Mode mode) {
+  constexpr int n_flavors = 2;
   std::map<Vec4, int> pending;
   for (const auto& [older, newer] : all_pairs(steps)) {
     pending[older]++;
@@ -208,6 +211,74 @@ ScheduleStats simulate(const Schedule& steps, int n_flavors, Mode mode) {
   }
   stats.peak_cache = peak;
   return stats;
+}
+
+std::vector<std::string> overlap_report(const std::vector<Schedule>& chains,
+                                        const Vec4& lattice) {
+  using Pair = std::pair<Vec4, Vec4>;
+  std::size_t const n = chains.size();
+  std::vector<std::map<Vec4, int>> sources(n);  // position -> window
+  std::vector<std::set<Pair>> pairs(n);
+  std::map<Vec4, int> source_count;
+  std::map<Pair, int> pair_count;
+  for (std::size_t c = 0; c < n; ++c) {
+    for (const Step& step : chains[c]) {
+      for (const Source& src : step.sources) {
+        Vec4 const p = mod_pos(src.position, lattice);
+        sources[c].emplace(p, step.index);
+        for (const Vec4& q : src.partners) {
+          pairs[c].insert(canonical_pair(p, mod_pos(q, lattice)));
+        }
+      }
+    }
+    for (const auto& [p, window] : sources[c]) source_count[p]++;
+    for (const auto& p : pairs[c]) pair_count[p]++;
+  }
+  auto repeated = [](const auto& m) {
+    return static_cast<long>(std::count_if(
+        m.begin(), m.end(), [](const auto& kv) { return kv.second > 1; }));
+  };
+  long const s = repeated(source_count), p = repeated(pair_count);
+  if (s == 0 && p == 0) return {};
+
+  std::vector<std::string> lines;
+  char buf[256];
+  auto add = [&](auto... args) {
+    std::snprintf(buf, sizeof buf, args...);
+    lines.emplace_back(buf);
+  };
+  add("WARNING: %ld source positions are in more than one chain (solved once "
+      "per chain) and %ld pairs are computed in more than one chain", s, p);
+  constexpr int kMaxLines = 20;     // pairs of chains listed
+  constexpr long kMaxSources = 10;  // shared sources listed per pair of chains
+  int shown = 0, more = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = i + 1; j < n; ++j) {
+      long ns = 0;
+      std::vector<std::tuple<Vec4, int, int>> shared;  // position, windows
+      for (const auto& [pos, window_i] : sources[i]) {
+        auto const it = sources[j].find(pos);
+        if (it == sources[j].end()) continue;
+        if (ns++ < kMaxSources) shared.emplace_back(pos, window_i, it->second);
+      }
+      long np = 0;
+      for (const auto& x : pairs[i]) np += static_cast<long>(pairs[j].count(x));
+      if (ns == 0 && np == 0) continue;
+      if (shown >= kMaxLines) {
+        ++more;
+        continue;
+      }
+      ++shown;
+      add("chains %zu and %zu share %ld sources and %ld pairs", i, j, ns, np);
+      for (const auto& [pos, window_i, window_j] : shared) {
+        add("  source (%d,%d,%d,%d) in window %d of chain %zu and window %d of "
+            "chain %zu", pos[0], pos[1], pos[2], pos[3], window_i, i, window_j, j);
+      }
+      if (ns > kMaxSources) add("  ... and %ld more sources", ns - kMaxSources);
+    }
+  }
+  if (more > 0) add("... and %d more pairs of chains", more);
+  return lines;
 }
 
 }  // namespace hlbl

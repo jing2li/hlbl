@@ -1,0 +1,11 @@
+# One chain on random fields (ctest hypercube_random_fields): windows 0 and 1,
+# 16 + 15 propagators, 15 + 65 = 80 pairs.
+random_fields   = yes
+lattice         = 6,6,6,6
+procs           = 1,1,1,1
+cache           = device
+out             = hypercube_random_fields.h5
+muon_mass       = 105.6583745   # MeV
+lattice_spacing = 0.07957       # fm
+
+chain start=0,0,0,0 dir=1,1,1,1 stride=1 steps=1

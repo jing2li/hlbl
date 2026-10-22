@@ -58,18 +58,13 @@ bool set_global(Input& in, const std::string& key, const std::string& value) {
     if (v != "device" && v != "host") {
       throw std::runtime_error("cache must be device or host");
     }
-    in.device_cache = (v == "device");
+    in.cache = v;
   } else if (key == "random_fields") {
     in.random_fields = parse_bool(value);
   } else if (key == "out") {
     in.out = trim(value);
   } else if (key == "timing") {
     in.timing = trim(value);
-  } else if (key == "flavors") {
-    in.flavors = parse_int(value);
-    if (in.flavors != 1 && in.flavors != 2) {
-      throw std::runtime_error("flavors must be 1 or 2");
-    }
   } else if (key == "lattice") {
     in.lattice = parse_vec4(trim(value));
   } else if (key == "procs") {
@@ -105,8 +100,6 @@ Chain parse_chain(const std::vector<std::string>& tokens) {
       c.stride = parse_int(value);
     } else if (key == "steps") {
       c.steps = value == "auto" ? -1 : parse_int(value);
-    } else if (key == "windows") {
-      parse_window_range(value, c.window_begin, c.window_end);
     } else {
       throw std::runtime_error("unknown chain key '" + key + "'");
     }
@@ -138,16 +131,6 @@ Vec4 parse_vec4(const std::string& text) {
   return v;
 }
 
-void parse_window_range(const std::string& text, int& begin, int& end) {
-  auto const colon = text.find(':');
-  if (colon == std::string::npos) {
-    throw std::runtime_error("window range wants a:b, got '" + text + "'");
-  }
-  std::string const a = text.substr(0, colon), b = text.substr(colon + 1);
-  begin = a.empty() ? 0 : parse_int(a);
-  end = b.empty() ? -1 : parse_int(b);
-}
-
 double parse_positive(const std::string& text, const std::string& name,
                       const std::string& unit) {
   double const v = parse_double(text);
@@ -165,13 +148,21 @@ void validate(const Chain& c) {
   }
   if (c.stride <= 0) throw std::runtime_error("stride must be positive");
   if (c.steps < -1) throw std::runtime_error("steps must be >= 0 (or auto)");
-  if (c.window_begin < 0) throw std::runtime_error("window range starts below 0");
-  if (c.window_end >= 0 && c.window_end <= c.window_begin) {
-    throw std::runtime_error("empty window range");
-  }
-  if (c.steps >= 0 && c.window_begin > c.steps) {
-    throw std::runtime_error("window range starts after the last window");
-  }
+}
+
+void check_required(const Input& in, const std::string& name) {
+  std::vector<std::string> missing;
+  if (in.chains.empty()) missing.push_back("chain lines");
+  if (!in.lattice) missing.push_back("lattice");
+  if (!in.procs) missing.push_back("procs");
+  if (in.muon_mass <= 0) missing.push_back("muon_mass");
+  if (in.lattice_spacing <= 0) missing.push_back("lattice_spacing");
+  if (in.out.empty()) missing.push_back("out");
+  if (in.cache.empty()) missing.push_back("cache");
+  if (missing.empty()) return;
+  std::string list;
+  for (const std::string& m : missing) list += (list.empty() ? "" : ", ") + m;
+  throw std::runtime_error(name + ": missing " + list);
 }
 
 Input parse_input(std::istream& in, const std::string& name) {

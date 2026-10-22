@@ -118,27 +118,26 @@ if (HLBL_WITH_TMLQCD)
     CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 endif()
 
-# The whole program on random fields (1 shift: 15 + 65 = 80 pairs)
+# The whole program on random fields: one chain (1 shift: 15 + 65 = 80 pairs,
+# device cache) and two chains (80 + 145 pairs, host cache)
+set(HLBL_TEST_INPUTS ${CMAKE_CURRENT_SOURCE_DIR}/sanity_check)
 add_test(NAME hypercube_random_fields
-  COMMAND hlbl_hypercube --random-fields --lattice 6 6 6 6 --stride 1 --steps 1
-          --muon-mass 105.6583745 --lattice-spacing 0.07957
-          --out hypercube_random_fields.h5)
+  COMMAND hlbl_hypercube --in ${HLBL_TEST_INPUTS}/one_chain.input)
 set_tests_properties(hypercube_random_fields PROPERTIES
   PASS_REGULAR_EXPRESSION "done: 80 pairs")
 
-# The checks of a dummy run, on random fields
+add_test(NAME hypercube_random_fields_multi
+  COMMAND hlbl_hypercube --in ${HLBL_TEST_INPUTS}/multi_chain.input)
+set_tests_properties(hypercube_random_fields_multi PROPERTIES
+  PASS_REGULAR_EXPRESSION "done: 225 pairs \\(225 results\\) in 2 chains")
+
 add_test(NAME hypercube_dummy_run
-  COMMAND hlbl_hypercube --dummy-run --in ${CMAKE_CURRENT_SOURCE_DIR}/sanity_check/multi_chain.input)
+  COMMAND hlbl_hypercube --dummy-run --in ${HLBL_TEST_INPUTS}/multi_chain.input)
 set_tests_properties(hypercube_dummy_run PROPERTIES
   PASS_REGULAR_EXPRESSION "dummy run: all checks passed")
 
-# Two chains from an input file (80 + 130 pairs; the second starts at window 1)
-add_test(NAME hypercube_random_fields_multi
-  COMMAND hlbl_hypercube --in ${CMAKE_CURRENT_SOURCE_DIR}/sanity_check/multi_chain.input
-          --out hypercube_random_fields_multi.h5)
-set_tests_properties(hypercube_random_fields_multi PROPERTIES
-  PASS_REGULAR_EXPRESSION "done: 210 pairs \\(210 results\\) in 2 chains")
-
+# The C++ schedules against the Python reference
+hlbl_executable(schedule_dump sanity_check/schedule_dump.cpp)
 add_test(NAME compare_schedule
   COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/compare_schedule.sh
-          $<TARGET_FILE:hlbl_hypercube>)
+          $<TARGET_FILE:schedule_dump>)

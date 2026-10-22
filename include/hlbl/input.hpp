@@ -4,12 +4,13 @@
 //
 //   # comment
 //   cache = host
-//   chain start=0,0,0,0 dir=1,1,1,1 stride=4 steps=30 windows=10:20
+//   chain start=0,0,0,0 dir=1,1,1,1 stride=4 steps=30
 //
 // Global lines are `key = value`, chain lines are `chain key=value ...`.
 // See scripts/input/hlbl.input.example for every key.
 
 #include <istream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,26 +19,24 @@
 namespace hlbl {
 
 // One chain: windows 0..steps of the sliding hypercube from `start` in
-// direction `dir`. The defaults are those of the command line.
+// direction `dir`. start, dir and stride are required.
 struct Chain {
-  Vec4 start{0, 0, 0, 0};
-  Vec4 direction{1, 1, 1, 1};
-  int stride = 4;
-  int steps = -1;         // -1: as many as fit before sources wrap
-  int window_begin = 0;   // run windows [window_begin, window_end)
-  int window_end = -1;    // -1: through the last
+  Vec4 start{};
+  Vec4 direction{};
+  int stride = 0;
+  int steps = -1;  // -1: as many as fit before sources wrap
 };
 
+// Required keys are empty (or 0) when not given; see check_required().
 struct Input {
   std::vector<Chain> chains;
-  std::string out;                 // result file; empty: do not write one
-  std::string timing;              // timing csv; empty: derived from `out`
-  bool device_cache = true;        // cache = device | host
-  bool random_fields = false;      // random numbers instead of solves
-  int flavors = 2;                 // dry-run counts only
-  Vec4 lattice{128, 64, 64, 64};   // dry-run and random fields; bounds auto steps
-  Vec4 procs{1, 1, 1, 1};          // random fields only
-  // xunit = m_mu a; required except for --dry-run. 0: not given.
+  // A solver run checks lattice and procs against invert.input.
+  std::optional<Vec4> lattice;     // global extents
+  std::optional<Vec4> procs;       // process grid
+  std::string cache;               // "device" | "host"
+  std::string out;                 // result file
+  std::string timing;              // optional; default <out>.timing.csv
+  bool random_fields = false;      // optional; random numbers instead of solves
   double muon_mass = 0;            // MeV
   double lattice_spacing = 0;      // fm
 };
@@ -46,11 +45,12 @@ struct Input {
 Input parse_input(std::istream& in, const std::string& name);
 Input parse_input_file(const std::string& path);
 
+// Throws std::runtime_error ("<name>: missing ...") unless `in` has chain
+// lines, lattice, procs, muon_mass, lattice_spacing, out and cache.
+void check_required(const Input& in, const std::string& name);
+
 // "a,b,c,d" (commas or blanks) -> Vec4
 Vec4 parse_vec4(const std::string& text);
-
-// "a:b", half-open; "a:" runs through the last window, ":b" starts at 0.
-void parse_window_range(const std::string& text, int& begin, int& end);
 
 // A positive, finite number in decimal notation; `name` and `unit` go into
 // the error message ("muon_mass must be a positive number (MeV)").
@@ -58,7 +58,7 @@ double parse_positive(const std::string& text, const std::string& name,
                       const std::string& unit);
 
 // Throws std::runtime_error unless the direction is a sign vector, the stride
-// is positive and the steps and window range make sense.
+// is positive and steps >= -1.
 void validate(const Chain& chain);
 
 }  // namespace hlbl

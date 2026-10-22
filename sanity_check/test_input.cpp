@@ -1,5 +1,5 @@
-// Checks the input file parser: globals, chains, defaults, comments and every
-// error case. Needs no GPU.
+// Checks the input file parser: globals, chains, defaults, comments, required
+// keys and every error case. Needs no GPU.
 
 #include "hlbl/input.hpp"
 
@@ -29,70 +29,95 @@ bool fails(const std::string& text, const std::string& where = "") {
   return false;
 }
 
+// check_required's message, or "" if it does not throw
+std::string missing(const std::string& text) {
+  try {
+    check_required(parse(text), "test");
+  } catch (const std::runtime_error& e) {
+    return e.what();
+  }
+  return "";
+}
+
 }  // namespace
 
 int main() {
   // a complete file: globals in the three spellings, comments, blank lines
+  const std::string complete =
+      "# a comment\n"
+      "\n"
+      "cache = host          # trailing comment\n"
+      "muon_mass=105.6583745\n"
+      "lattice_spacing 0.07957   # fm\n"
+      "out=result.h5\n"
+      "timing = t.csv\n"
+      "random_fields = on\n"
+      "lattice = 6,6,6,6\n"
+      "procs = 1 1 1 2\n"
+      "chain start=0,0,0,0 dir=1,1,1,1 stride=4 steps=30\n"
+      "chain start=32,0,0,0  dir=1,-1,1,1  stride=4 steps=auto\n"
+      "chain stride=6 dir=-1,-1,-1,-1 start=0,16,0,-3\n";
   {
-    Input in = parse(
-        "# a comment\n"
-        "\n"
-        "cache = host          # trailing comment\n"
-        "muon_mass=105.6583745\n"
-        "lattice_spacing 0.07957   # fm\n"
-        "out=result.h5\n"
-        "timing = t.csv\n"
-        "random_fields = on\n"
-        "flavors = 1\n"
-        "lattice = 6,6,6,6\n"
-        "procs = 1 1 1 2\n"
-        "chain start=0,0,0,0 dir=1,1,1,1 stride=4 steps=30\n"
-        "chain start=32,0,0,0  dir=1,-1,1,1  stride=4 steps=30 windows=10:20\n"
-        "chain stride=6 dir=-1,-1,-1,-1 start=0,16,0,-3\n");
-    HLBL_CHECK(!in.device_cache);
+    Input in = parse(complete);
+    HLBL_CHECK(in.cache == "host");
     HLBL_CHECK(in.muon_mass == 105.6583745);
     HLBL_CHECK(in.lattice_spacing == 0.07957);
     HLBL_CHECK(in.out == "result.h5");
     HLBL_CHECK(in.timing == "t.csv");
     HLBL_CHECK(in.random_fields);
-    HLBL_CHECK(in.flavors == 1);
-    HLBL_CHECK((in.lattice == Vec4{6, 6, 6, 6}));
-    HLBL_CHECK((in.procs == Vec4{1, 1, 1, 2}));
+    HLBL_CHECK((*in.lattice == Vec4{6, 6, 6, 6}));
+    HLBL_CHECK((*in.procs == Vec4{1, 1, 1, 2}));
     HLBL_CHECK(in.chains.size() == 3);
 
     const Chain& a = in.chains[0];
     HLBL_CHECK((a.start == Vec4{0, 0, 0, 0}));
     HLBL_CHECK((a.direction == Vec4{1, 1, 1, 1}));
     HLBL_CHECK(a.stride == 4 && a.steps == 30);
-    HLBL_CHECK(a.window_begin == 0 && a.window_end == -1);  // all windows
 
     const Chain& b = in.chains[1];
     HLBL_CHECK((b.start == Vec4{32, 0, 0, 0}));
     HLBL_CHECK((b.direction == Vec4{1, -1, 1, 1}));
-    HLBL_CHECK(b.window_begin == 10 && b.window_end == 20);
+    HLBL_CHECK(b.steps == -1);  // auto
 
     const Chain& c = in.chains[2];  // keys in any order; steps defaults to auto
     HLBL_CHECK((c.start == Vec4{0, 16, 0, -3}));
     HLBL_CHECK((c.direction == Vec4{-1, -1, -1, -1}));
     HLBL_CHECK(c.stride == 6 && c.steps == -1);
+
+    check_required(in, "test");  // nothing missing
   }
 
-  // an empty file is valid: no chains (the program then uses its defaults)
+  // an empty file parses, with every required key missing
   {
     Input in = parse("# nothing\n");
-    HLBL_CHECK(in.chains.empty());
-    HLBL_CHECK(in.device_cache && in.out.empty());
-    HLBL_CHECK(in.muon_mass == 0 && in.lattice_spacing == 0);  // not given
+    HLBL_CHECK(in.chains.empty() && !in.lattice && !in.procs);
+    HLBL_CHECK(in.cache.empty() && in.out.empty() && in.timing.empty());
+    HLBL_CHECK(!in.random_fields);
+    HLBL_CHECK(in.muon_mass == 0 && in.lattice_spacing == 0);
+    HLBL_CHECK(missing("") ==
+               "test: missing chain lines, lattice, procs, muon_mass, "
+               "lattice_spacing, out, cache");
   }
 
-  // steps=auto and open window ranges
+  // each required key on its own; timing and random_fields are optional
   {
-    Input in = parse(
-        "chain start=0,0,0,0 dir=1,1,1,1 stride=2 steps=auto windows=3:\n"
-        "chain start=0,0,0,0 dir=1,1,1,1 stride=2 steps=9 windows=:4\n");
-    HLBL_CHECK(in.chains[0].steps == -1);
-    HLBL_CHECK(in.chains[0].window_begin == 3 && in.chains[0].window_end == -1);
-    HLBL_CHECK(in.chains[1].window_begin == 0 && in.chains[1].window_end == 4);
+    auto without = [&](const std::string& prefix) {
+      std::string text;
+      std::istringstream s(complete);
+      for (std::string line; std::getline(s, line);) {
+        if (line.rfind(prefix, 0) != 0) text += line + "\n";
+      }
+      return missing(text);
+    };
+    HLBL_CHECK(without("chain") == "test: missing chain lines");
+    HLBL_CHECK(without("lattice =") == "test: missing lattice");
+    HLBL_CHECK(without("procs") == "test: missing procs");
+    HLBL_CHECK(without("muon_mass") == "test: missing muon_mass");
+    HLBL_CHECK(without("lattice_spacing") == "test: missing lattice_spacing");
+    HLBL_CHECK(without("out") == "test: missing out");
+    HLBL_CHECK(without("cache") == "test: missing cache");
+    HLBL_CHECK(without("timing").empty());
+    HLBL_CHECK(without("random_fields").empty());
   }
 
   // errors in chains; the message names the line
@@ -109,24 +134,19 @@ int main() {
   HLBL_CHECK(fails(ok + " steps=x", "integer"));
   HLBL_CHECK(fails(ok + " stride=5", "twice"));
   HLBL_CHECK(fails(ok + " colour=1", "unknown chain key"));
+  HLBL_CHECK(fails(ok + " windows=1:3", "unknown chain key 'windows'"));
   HLBL_CHECK(fails(ok + " steps", "key=value"));
   HLBL_CHECK(fails("chain start=0,0,0 dir=1,1,1,1 stride=4", "4 integers"));
   HLBL_CHECK(fails("chain start=0,0,0,0,0 dir=1,1,1,1 stride=4", "4 integers"));
   HLBL_CHECK(fails("chain start=0,0,0,a dir=1,1,1,1 stride=4", "integer"));
-  HLBL_CHECK(fails(ok + " windows=5", "a:b"));
-  HLBL_CHECK(fails(ok + " windows=3:3", "empty window range"));
-  HLBL_CHECK(fails(ok + " windows=4:2", "empty window range"));
-  HLBL_CHECK(fails(ok + " windows=-1:2", "below 0"));
-  HLBL_CHECK(fails(ok + " steps=2 windows=3:", "after the last window"));
-  HLBL_CHECK(!fails(ok + " steps=2 windows=2:"));
 
   // errors in globals
   HLBL_CHECK(fails("cache = gpu", "device or host"));
   HLBL_CHECK(fails("random_fields = maybe", "yes/no"));
-  HLBL_CHECK(fails("flavors = 3", "1 or 2"));
   HLBL_CHECK(fails("lattice = 6,6,6", "4 integers"));
   HLBL_CHECK(fails("colour = red", "unknown option"));
   HLBL_CHECK(fails("chains start=0,0,0,0", "unknown option"));
+  HLBL_CHECK(fails("flavors = 2", "unknown option 'flavors'"));
   HLBL_CHECK(fails("force = yes", "unknown option"));  // a run checks nothing to force
   HLBL_CHECK(fails("muon_mass = 0", "muon_mass must be a positive number (MeV)"));
   HLBL_CHECK(fails("lattice_spacing = -0.08", "positive"));
@@ -143,15 +163,10 @@ int main() {
   {
     HLBL_CHECK((parse_vec4("1, 2,3 4") == Vec4{1, 2, 3, 4}));
     HLBL_CHECK(parse_positive(" 7.957e-2 ", "a", "fm") == 0.07957);
-    int b = -1, e = -1;
-    parse_window_range("2:5", b, e);
-    HLBL_CHECK(b == 2 && e == 5);
-    parse_window_range("2:", b, e);
-    HLBL_CHECK(b == 2 && e == -1);
 
-    Chain c;  // the command-line defaults are a valid chain
-    validate(c);
+    Chain c;
     c.direction = {1, 1, 1, 2};
+    c.stride = 4;
     bool threw = false;
     try {
       validate(c);
