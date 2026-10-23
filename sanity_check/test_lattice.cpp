@@ -31,9 +31,16 @@ int main(int argc, char** argv) {
   HLBL_CHECK(own.local_coord == (Vec4{3, 2, 1, 0}));
 
   // site_map_diff: minimum image on an L=8 axis. (6-1) mod 8 = 5 ->
-  // site_map(5,8) = 5-8 = -3.
+  // site_map(5,8) = 5-8 = -3; (1-6) mod 8 = 3 stays 3.
   Vec4 d = lat.site_map_diff({6, 0, 0, 0}, {1, 0, 0, 0});
   HLBL_CHECK(d[0] == -3);
+  d = lat.site_map_diff({1, 0, 0, 0}, {6, 0, 0, 0});
+  HLBL_CHECK(d[0] == 3);
+  // L/2 goes to -L/2 from either side: 5-1 = 4 on L=8, (0-2) mod 4 = 2 on L=4.
+  d = lat.site_map_diff({5, 0, 0, 2}, {1, 0, 0, 0});
+  HLBL_CHECK(d[0] == -4 && d[3] == -2);
+  d = lat.site_map_diff({0, 0, 0, 0}, {0, 0, 0, 2});
+  HLBL_CHECK(d[3] == -2);
 
   std::printf("test_lattice: all checks passed\n");
   MPI_Finalize();

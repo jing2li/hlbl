@@ -122,24 +122,28 @@ __global__ void ker_g5_phi(double* spinor, size_t len) {
 }
 
 /**
- * Wrap coords to [-L/2, L/2]. Assumes inputs are in [0, ..., L-1]
+ * Wrap coords to [-L/2, L/2), sending L/2 to -L/2. Assumes inputs are in
+ * [0, ..., L-1]. Every QED kernel argument uses this rule.
  */
 __device__ int coord_map(int xi, int Li) {
   return (xi >= Li / 2) ? (xi - Li) : xi;
 }
+/**
+ * As coord_map, but L/2 goes to 0 (range (-L/2, L/2), even L). Only for the
+ * coordinate weights x_rho, z_rho: they are odd, so the images +-L/2 average
+ * to 0.
+ */
 __device__ int coord_map_zerohalf(int xi, int Li) {
   return (xi > Li / 2) ? xi - Li : ( (xi < Li / 2) ? xi : 0 );
 }
 
 /**
- * Minimum-image difference a - b, for any integer inputs.
+ * Minimum-image difference a - b in [-L/2, L/2), for any integer inputs.
  *
  * This is NOT coord_map(a) - coord_map(b): that leaves the result outside
- * (-L/2, L/2] whenever the two components wrapped differently, handing the QED
+ * [-L/2, L/2) whenever the two components wrapped differently, handing the QED
  * kernel a separation the periodic lattice cannot realise. Every kernel
- * argument built as a difference goes through these. _diff follows the
- * coord_map convention, _zerohalf_diff the coord_map_zerohalf one; pick
- * whichever the neighbouring kernel arguments already use.
+ * argument built as a difference goes through this.
  */
 __device__ int coord_mod_pos(int a, int Li) {
   int const r = a % Li;
@@ -147,9 +151,6 @@ __device__ int coord_mod_pos(int a, int Li) {
 }
 __device__ int coord_map_diff(int a, int b, int Li) {
   return coord_map(coord_mod_pos(a - b, Li), Li);
-}
-__device__ int coord_map_zerohalf_diff(int a, int b, int Li) {
-  return coord_map_zerohalf(coord_mod_pos(a - b, Li), Li);
 }
 
 
@@ -405,22 +406,24 @@ void ker_4pt_contraction(
       xv[2] * xunit.a,
       xv[3] * xunit.a };
 
+    /* yv comes from the host: map it here too, so ym is in [-L/2, L/2)
+     * whatever the caller passed */
+    int const yv_arr[4] = { yv.t, yv.x, yv.y, yv.z };
     double const ym[4] = {
-      yv.t * xunit.a,
-      yv.x * xunit.a,
-      yv.y * xunit.a,
-      yv.z * xunit.a };
+      coord_map(coord_mod_pos(yv_arr[0], global_geom_arr[0]), global_geom_arr[0]) * xunit.a,
+      coord_map(coord_mod_pos(yv_arr[1], global_geom_arr[1]), global_geom_arr[1]) * xunit.a,
+      coord_map(coord_mod_pos(yv_arr[2], global_geom_arr[2]), global_geom_arr[2]) * xunit.a,
+      coord_map(coord_mod_pos(yv_arr[3], global_geom_arr[3]), global_geom_arr[3]) * xunit.a };
 
     double * const _corr_I_re  = corr_I_re;
     double * const _corr_II_re = corr_II_re;
 
-    /* minimum image, not xm - ym: see coord_map_zerohalf_diff */
-    int const yv_arr[4] = { yv.t, yv.x, yv.y, yv.z };
+    /* minimum image, not xm - ym: see coord_map_diff */
     double const xm_mi_ym[4] = {
-      coord_map_zerohalf_diff(x_rel[0], yv_arr[0], global_geom_arr[0]) * xunit.a,
-      coord_map_zerohalf_diff(x_rel[1], yv_arr[1], global_geom_arr[1]) * xunit.a,
-      coord_map_zerohalf_diff(x_rel[2], yv_arr[2], global_geom_arr[2]) * xunit.a,
-      coord_map_zerohalf_diff(x_rel[3], yv_arr[3], global_geom_arr[3]) * xunit.a };
+      coord_map_diff(x_rel[0], yv_arr[0], global_geom_arr[0]) * xunit.a,
+      coord_map_diff(x_rel[1], yv_arr[1], global_geom_arr[1]) * xunit.a,
+      coord_map_diff(x_rel[2], yv_arr[2], global_geom_arr[2]) * xunit.a,
+      coord_map_diff(x_rel[3], yv_arr[3], global_geom_arr[3]) * xunit.a };
 
     for (int ikernel = 0; ikernel < CUDA_N_QED_KERNEL; ++ikernel) {
       // dtmp += (
@@ -592,39 +595,40 @@ void ker_2p2_pieces(
         (gsy_arr[3] - gsw_arr[3] + global_geom_arr[3]) % global_geom_arr[3]
       };
       int const yv[4] = {
-        coord_map_zerohalf(y[0], global_geom.T),
-        coord_map_zerohalf(y[1], global_geom.LX),
-        coord_map_zerohalf(y[2], global_geom.LY),
-        coord_map_zerohalf(y[3], global_geom.LZ)
+        coord_map(y[0], global_geom.T),
+        coord_map(y[1], global_geom.LX),
+        coord_map(y[2], global_geom.LY),
+        coord_map(y[3], global_geom.LZ)
       };
       double const ym[4] = {
         yv[0] * xunit.a,
         yv[1] * xunit.a,
         yv[2] * xunit.a,
         yv[3] * xunit.a };
+      /* gsw - gsy mapped on its own, not -yv: -(-L/2) would leave [-L/2, L/2) */
       double const ym_minus[4] = {
-        -yv[0] * xunit.a,
-        -yv[1] * xunit.a,
-        -yv[2] * xunit.a,
-        -yv[3] * xunit.a };
-      
+        coord_map_diff(gsw_arr[0], gsy_arr[0], global_geom_arr[0]) * xunit.a,
+        coord_map_diff(gsw_arr[1], gsy_arr[1], global_geom_arr[1]) * xunit.a,
+        coord_map_diff(gsw_arr[2], gsy_arr[2], global_geom_arr[2]) * xunit.a,
+        coord_map_diff(gsw_arr[3], gsy_arr[3], global_geom_arr[3]) * xunit.a };
+
       int const xv[4] = {
-        coord_map_zerohalf(z[0], global_geom_arr[0]),
-        coord_map_zerohalf(z[1], global_geom_arr[1]),
-        coord_map_zerohalf(z[2], global_geom_arr[2]),
-        coord_map_zerohalf(z[3], global_geom_arr[3])
+        coord_map(z[0], global_geom_arr[0]),
+        coord_map(z[1], global_geom_arr[1]),
+        coord_map(z[2], global_geom_arr[2]),
+        coord_map(z[3], global_geom_arr[3])
       };
       double const xm[4] = {
         xv[0] * xunit.a,
         xv[1] * xunit.a,
         xv[2] * xunit.a,
         xv[3] * xunit.a };
-      /* minimum image, not xm - ym: see coord_map_zerohalf_diff */
+      /* minimum image, not xm - ym: see coord_map_diff */
       double const xm_mi_ym[4] = {
-        coord_map_zerohalf_diff(z[0], y[0], global_geom_arr[0]) * xunit.a,
-        coord_map_zerohalf_diff(z[1], y[1], global_geom_arr[1]) * xunit.a,
-        coord_map_zerohalf_diff(z[2], y[2], global_geom_arr[2]) * xunit.a,
-        coord_map_zerohalf_diff(z[3], y[3], global_geom_arr[3]) * xunit.a };
+        coord_map_diff(z[0], y[0], global_geom_arr[0]) * xunit.a,
+        coord_map_diff(z[1], y[1], global_geom_arr[1]) * xunit.a,
+        coord_map_diff(z[2], y[2], global_geom_arr[2]) * xunit.a,
+        coord_map_diff(z[3], y[3], global_geom_arr[3]) * xunit.a };
 
       for (int ikernel = 0; ikernel < CUDA_N_QED_KERNEL; ++ikernel) {
         double local_P2_0[4][4][4] = { 0 };

@@ -14,9 +14,9 @@ namespace hlbl {
 
 // One contracted pair.
 struct PairResult {
-  Vec4 x;   // kernel origin (the earlier source of the pair), global site
-  Vec4 y;   // the other source, global site
-  Vec4 yv;  // minimum-image separation y - x, in lattice units
+  Vec4 x;   // kernel origin (the earlier source of the pair), global site in [0, L)
+  Vec4 y;   // the other source, global site in [0, L)
+  Vec4 yv;  // y - x, minimum image in [-L/2, L/2) (site_map_diff)
   int chain = 0;   // index of the chain in the input
   int window = 0;  // window within that chain
   std::array<double, 2> kernel_sum{};  // one per flavour
@@ -38,9 +38,8 @@ struct RunInfo {
 //   x[N][4], y[N][4], yv[N][4]  int
 //   chain[N], window[N]         int
 //   kernel_sum[N][2]            double  (flavour 0, 1)
-// plus the table chains[C][10], and RunInfo and the git revision as
-// attributes. Each append() is flushed, so a killed job keeps its finished
-// windows.
+// plus the table chains[C][10], and RunInfo as attributes. Each append() is
+// flushed, so a killed job keeps its finished windows.
 class ResultWriter {
  public:
   ResultWriter(const std::string& path, const RunInfo& info);

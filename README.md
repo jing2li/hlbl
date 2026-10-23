@@ -60,7 +60,6 @@ bin/            hlbl_hypercube
 include/hlbl/   headers
 src/            sources
 kernels/        GPU kernels from cvc (kernels/VENDORED.md)
-deps/kqed/      CMake build of KQED_cuda
 sanity_check/   tests and check_pair
 scripts/        Python reference, build, input generator, Slurm script
 ```
@@ -71,12 +70,16 @@ scripts/        Python reference, build, input generator, Slurm script
 
 Run `scripts/do_cmake.sh`. It configures and builds in `build/`.
 
-- `tmLQCD_DIR` must be the *installed* package config; the build tree's lacks
-  the c-lime finder.
-- `KQED_SOURCE_DIR` is a KQED checkout at `deb4d488` (cloned if empty). Keep
-  it in place: KQED reads `PRECOMP/` from it at run time.
-- Defaults: `Release`, CUDA architecture 90 (GH200). `-DHLBL_WITH_TMLQCD=OFF`
-  builds without the solver.
+- hlbl links tmLQCD, which brings lemon, c-lime and QUDA. tmLQCD's package
+  config looks these up again, so `CMAKE_PREFIX_PATH` holds the tmLQCD install
+  prefix (not its build tree, which lacks the c-lime finder) and the prefixes
+  tmLQCD was configured with. Change them together when tmLQCD is rebuilt.
+- `KQED_ROOT` is the install prefix of KQED's GPU build
+  (`lib/libKQED_cuda.a`, `include/`). Keep it in place: KQED reads `PRECOMP/`
+  from it at run time. The library in `do_cmake.sh` is a bug-fixed KQED: its
+  kernel is 0 beyond |x| ≈ 12 fm, where KQED `deb4d488` (used before) gave
+  values ≲ 2·10⁻⁸. Below that the two agree to rounding.
+- Defaults: `Release`, CUDA architecture 90 (GH200).
 - `hlbl_kernels_obj` must stay an OBJECT library, or nvlink can drop device
   code (see `CMakeLists.txt`).
 - After changing the tmLQCD/QUDA build, use a new `QUDA_RESOURCE_PATH`: QUDA
@@ -234,17 +237,18 @@ finished windows.
 
 | dataset | shape | content |
 |---|---|---|
-| `x`, `y` | N × 4 int | the pair's sources (global sites); `x` is the earlier one and the kernel origin |
-| `yv` | N × 4 int | y − x, always (±n, ±n, ±n, ±n) |
+| `x`, `y` | N × 4 int | the pair's sources (global sites, in [0, L)); `x` is the earlier one and the kernel origin |
+| `yv` | N × 4 int | y − x, minimum image in [−L/2, L/2); always (±n, ±n, ±n, ±n) |
 | `chain` | N int | chain index, in input order |
 | `window` | N int | window of that chain |
 | `kernel_sum` | N × 2 double | flavour 0, flavour 1 |
 | `chains` | C × 10 int | chains as run: start (4), dir (4), stride, steps (resolved) |
 
 Attributes: `lattice`, `procs`, `nconf`, `chains_columns`, `kernel`,
-`flavour_order`, `hlbl_revision`, `muon_mass_MeV`, `lattice_spacing_fm`,
-`xunit`. With exactly one chain also `direction`, `origin` and `stride`, as in
-files from before chain lists.
+`flavour_order`, `coordinate_ranges`, `muon_mass_MeV`, `lattice_spacing_fm`,
+`xunit`. With exactly
+one chain also `direction`, `origin` and `stride`, as in files from before
+chain lists.
 
 The timing log has one CSV row per solve and per kernel sum:
 `kind,chain,window,x0..x3,y0..y3,seconds,iterations`.

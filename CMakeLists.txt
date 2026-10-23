@@ -15,21 +15,48 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-option(HLBL_WITH_TMLQCD "Build the solver interface (needs tmLQCD and QUDA)" ON)
-
 enable_testing()
 
 find_package(MPI REQUIRED COMPONENTS C CXX)
 find_package(CUDAToolkit REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C)
 
-add_subdirectory(deps/kqed)
+# tmLQCDConfig.cmake calls find_dependency() without including this
+include(CMakeFindDependencyMacro)
+# tmlqcd::tmlqcd brings lemon, c-lime and QUDA, but tmLQCDConfig.cmake looks
+# them up again instead of recording where tmLQCD found them, so
+# CMAKE_PREFIX_PATH must hold the prefixes tmLQCD was configured with
+find_package(tmLQCD REQUIRED)
+
+# ---------------------------------------------------------------------------
+# KQED_cuda: an installed GPU build of KQED (https://github.com/RJHudspith/KQED),
+# the prefix of its `configure --with-cuda && make install`. The library has
+# relocatable device code and reads its tables from LIB_PATH/PRECOMP at run
+# time, where LIB_PATH is compiled in (include/config.h).
+# ---------------------------------------------------------------------------
+set(KQED_ROOT "" CACHE PATH "KQED GPU install prefix (lib/libKQED_cuda.a, include/KQED.h)")
+find_library(KQED_CUDA_LIBRARY KQED_cuda PATHS ${KQED_ROOT}/lib NO_DEFAULT_PATH REQUIRED)
+find_path(KQED_INCLUDE_DIR KQED.h PATHS ${KQED_ROOT}/include NO_DEFAULT_PATH REQUIRED)
+
+file(STRINGS ${KQED_INCLUDE_DIR}/config.h KQED_LIB_PATH REGEX "^#define LIB_PATH ")
+string(REGEX REPLACE "^#define LIB_PATH \"(.*)\"$" "\\1" KQED_LIB_PATH "${KQED_LIB_PATH}")
+if (NOT EXISTS "${KQED_LIB_PATH}/PRECOMP/FFxy_single_cksum.bin")
+  message(FATAL_ERROR "KQED reads its tables from ${KQED_LIB_PATH}/PRECOMP, which is missing")
+endif()
+
+add_library(KQED_cuda STATIC IMPORTED)
+set_target_properties(KQED_cuda PROPERTIES
+  IMPORTED_LOCATION ${KQED_CUDA_LIBRARY}
+  INTERFACE_INCLUDE_DIRECTORIES ${KQED_INCLUDE_DIR}
+  INTERFACE_LINK_LIBRARIES "CUDA::cudart;CUDA::cuda_driver")
 
 # ---------------------------------------------------------------------------
 # GPU kernels from cvc (kernels/VENDORED.md). Must be OBJECT, not STATIC: the
 # kernels call device code in KQED_cuda, and nvlink can lose device code split
 # over two static archives (undefined __cudaRegisterLinkedBinary_* symbols).
-# Every executable links it directly (hlbl_executable()).
+# Every executable links it directly (hlbl_executable()). hlbl_core must not
+# link it: that also archives the objects into libhlbl_core.a, and nvlink
+# then finds them twice (multiple definition).
 # ---------------------------------------------------------------------------
 add_library(hlbl_kernels_obj OBJECT
   kernels/cuda_lattice.cu
@@ -54,31 +81,14 @@ add_library(hlbl_core STATIC
   src/propagator_cache.cpp
   src/output.cpp
   src/driver.cpp)
-target_include_directories(hlbl_core PUBLIC include)
-target_link_libraries(hlbl_core PUBLIC hlbl_kernels_obj HDF5::HDF5)
-
-# Git revision for the result files; re-run cmake after committing.
-execute_process(
-  COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR} describe --always --dirty --abbrev=12
-  OUTPUT_VARIABLE HLBL_GIT_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
-  ERROR_QUIET)
-if (NOT HLBL_GIT_REVISION)
-  set(HLBL_GIT_REVISION unknown)
-endif()
-set_source_files_properties(src/output.cpp PROPERTIES
-  COMPILE_DEFINITIONS HLBL_GIT_REVISION="${HLBL_GIT_REVISION}")
+target_include_directories(hlbl_core PUBLIC include kernels)
+target_link_libraries(hlbl_core PUBLIC KQED_cuda MPI::MPI_CXX CUDA::cudart HDF5::HDF5)
 
 # ---------------------------------------------------------------------------
 # hlbl_solver: the tmLQCD/QUDA interface.
 # ---------------------------------------------------------------------------
-if (HLBL_WITH_TMLQCD)
-  # tmLQCDConfig.cmake calls find_dependency() without including this
-  include(CMakeFindDependencyMacro)
-  find_package(tmLQCD REQUIRED)
-
-  add_library(hlbl_solver STATIC src/solver.cpp)
-  target_link_libraries(hlbl_solver PUBLIC hlbl_core tmlqcd::tmlqcd)
-endif()
+add_library(hlbl_solver STATIC src/solver.cpp)
+target_link_libraries(hlbl_solver PUBLIC hlbl_core tmlqcd::tmlqcd)
 
 # ---------------------------------------------------------------------------
 # Executables
@@ -97,10 +107,7 @@ function(hlbl_test name)
 endfunction()
 
 hlbl_executable(hlbl_hypercube bin/hlbl_hypercube.cpp)
-if (HLBL_WITH_TMLQCD)
-  target_link_libraries(hlbl_hypercube PRIVATE hlbl_solver)
-  target_compile_definitions(hlbl_hypercube PRIVATE HLBL_HAVE_SOLVER)
-endif()
+target_link_libraries(hlbl_hypercube PRIVATE hlbl_solver)
 
 hlbl_test(test_schedule)
 hlbl_test(test_input)
@@ -110,13 +117,11 @@ hlbl_test(test_contract_random)
 hlbl_test(test_driver_random)
 
 # check_pair needs a real gauge configuration, so it is not a ctest case.
-if (HLBL_WITH_TMLQCD)
-  add_executable(check_pair sanity_check/check_pair.cpp)
-  target_link_libraries(check_pair PRIVATE hlbl_solver hlbl_kernels_obj)
-  set_target_properties(check_pair PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-    CUDA_RESOLVE_DEVICE_SYMBOLS ON)
-endif()
+add_executable(check_pair sanity_check/check_pair.cpp)
+target_link_libraries(check_pair PRIVATE hlbl_solver hlbl_kernels_obj)
+set_target_properties(check_pair PROPERTIES
+  CUDA_SEPARABLE_COMPILATION ON
+  CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 
 # The whole program on random fields: one chain (1 shift: 15 + 65 = 80 pairs,
 # device cache) and two chains (80 + 145 pairs, host cache)

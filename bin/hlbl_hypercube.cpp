@@ -35,9 +35,7 @@
 #include "hlbl/propagator_cache.hpp"
 #include "hlbl/provider.hpp"
 #include "hlbl/schedule.hpp"
-#ifdef HLBL_HAVE_SOLVER
 #include "hlbl/solver.hpp"
-#endif
 
 namespace {
 
@@ -391,7 +389,6 @@ int main(int argc, char** argv) {
         run(o, lattice, /*nconf=*/-1, provider);
       }
     } else {
-#ifdef HLBL_HAVE_SOLVER
       if (o.tune) {
         // QUDA saves its tune cache in QUDA_RESOURCE_PATH when it ends
         const char* path = std::getenv("QUDA_RESOURCE_PATH");
@@ -425,11 +422,6 @@ int main(int argc, char** argv) {
       } else {
         run(o, solver.lattice(), solver.nconf(), provider);
       }
-#else
-      throw std::runtime_error(
-          "built without tmLQCD (HLBL_WITH_TMLQCD=OFF): only random_fields runs "
-          "are available");
-#endif
     }
   } catch (const std::exception& e) {
     std::fprintf(stderr, "[hlbl_hypercube] rank %d error: %s\n", rank, e.what());

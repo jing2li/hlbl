@@ -5,10 +5,6 @@
 #include <cstring>
 #include <stdexcept>
 
-#ifndef HLBL_GIT_REVISION
-#define HLBL_GIT_REVISION "unknown"
-#endif
-
 namespace hlbl {
 
 namespace {
@@ -148,8 +144,9 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
     attr_int(file, "stride", c.stride);
   }
   attr_string(file, "kernel", info.kernel);
-  attr_string(file, "hlbl_revision", HLBL_GIT_REVISION);
   attr_string(file, "flavour_order", "kernel_sum[:,0] = operator 0, [:,1] = operator 1");
+  attr_string(file, "coordinate_ranges",
+              "x, y: [0, L); yv: minimum image of y - x in [-L/2, L/2)");
   check(H5Fflush(file, H5F_SCOPE_GLOBAL), "flush");
 }
 

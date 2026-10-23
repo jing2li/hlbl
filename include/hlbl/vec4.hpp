@@ -27,8 +27,9 @@ inline Vec4 mod_pos(Vec4 a, Vec4 L) {
           mod_pos(a[3], L[3])};
 }
 
-// x in [0, L) -> centred representation in (-L/2, L/2]. cvc site_map(),
-// arXiv:2006.16224 eq. 8.
+// x in [0, L) -> centred representation in [-L/2, L/2). cvc site_map(),
+// arXiv:2006.16224 eq. 8. The GPU kernels map every QED kernel argument this
+// way.
 inline int site_map_1d(int x, int L) { return x >= L / 2 ? x - L : x; }
 inline Vec4 site_map(Vec4 x, Vec4 L) {
   return {site_map_1d(x[0], L[0]), site_map_1d(x[1], L[1]),
@@ -37,7 +38,7 @@ inline Vec4 site_map(Vec4 x, Vec4 L) {
 
 // Minimum-image difference a - b (cvc site_map_diff()). Use it for every
 // kernel argument built as a difference: site_map(a) - site_map(b) can leave
-// (-L/2, L/2] when a and b wrap differently.
+// [-L/2, L/2) when a and b wrap differently.
 inline Vec4 site_map_diff(Vec4 a, Vec4 b, Vec4 L) {
   return site_map(mod_pos(sub(a, b), L), L);
 }

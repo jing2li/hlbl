@@ -40,7 +40,7 @@ class Lattice {
   };
   Owner owner(const Vec4& global_coord) const;
 
-  // Difference a - b, shortest way around the periodic lattice.
+  // Difference a - b, shortest way around the periodic lattice, in [-L/2, L/2).
   Vec4 site_map_diff(const Vec4& a, const Vec4& b) const {
     return hlbl::site_map_diff(a, b, global_);
   }

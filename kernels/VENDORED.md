@@ -27,8 +27,7 @@ bugs here deliberately and record each change below.
 - `cuda_lattice.cu`: `cu_dzu_dzsu` and `cu_4pt_contraction`, the connected
   kernel sum.
 - `hlbl_kernels/kernels.cu`: the 2+2 pieces (`compute_2p2_gpu`). It is
-  compiled but not called yet. `HAVE_KQED_V2` stays undefined, so the
-  elementwise KQED path, which needs a newer KQED, is left out.
+  compiled but not called yet.
 - `kqed_cuda_glue.cu`: the external definition of `__checkCudaErrors`, which
   `libKQED_cuda.a` references but does not define.
 
@@ -40,10 +39,19 @@ Both kernel files evaluate a single QED kernel, LΛ with Λ = 0.4
 | date | commit | file | change |
 |---|---|---|---|
 | 2026-10-16 | `f7e4a90` | `hlbl_kernels/kernels.cu` | `prop_idx()` returns `size_t` and casts each term before multiplying. It returned `int` and multiplied in 32 bits; its largest value, 576 × the local volume, passes 2³¹ above 3.7 million local sites. Only the 2+2 code (`kernel_pi`, `kernel_4pt` of this file) uses it, and hlbl calls neither yet. |
+| 2026-10-23 | (uncommitted) | `cuda_lattice.cu` | One rule for every QED kernel argument: `coord_map`, [−L/2, L/2). Zerohalf (L/2 → 0) only for the odd weights x_ρ, z_ρ. Differs from cvc in 4pt x − y (cvc: zerohalf) and in 2p2 x, y, −y, x − y (cvc: zerohalf); 4pt also maps y itself. Results change only where a component of such a separation is exactly L/2. `coord_map_zerohalf_diff` removed. |
+| 2026-10-23 | (uncommitted) | `hlbl_kernels/kernels.cu` | The same rule: `site_map` for the QED kernel arguments of `kernel_4pt` (x − y, and y mapped in the kernel) and `kernel_p20`/`p21`/`p3` (cvc: zerohalf); `site_map_zerohalf` only for x_ρ. Removed `kernel_p23` (never launched), the `HAVE_KQED_V2` path (`KQED_LX_INIT`/`QUERY`, `kernel_p2{0,1}_mt`, `kernel_p3_mt` and their launch branch) and a dead commented block in `kernel_p3`. |
+| 2026-10-23 | (uncommitted) | `hlbl_kernels/kernels.cuh` | `kernel_p23` declaration removed. |
 
-sha256 of `hlbl_kernels/kernels.cu` now:
-`e52f47dcbffab8d5bde5b21e00a3703e1def26bb995bce37b9573c82f958ea82`. The other
-files are as copied.
+sha256 now:
+
+| file | sha256 |
+|---|---|
+| `cuda_lattice.cu` | `71296ebee84003ffffa54f798b0373dc6c2bc613fd66f95234dcf4cc51253911` |
+| `hlbl_kernels/kernels.cu` | `926113265a1e360562fa5960000c0224dceafdc451964d9e21c2c11ca9c65a0b` |
+| `hlbl_kernels/kernels.cuh` | `c3d5dbec2c70530db6a90de7bec6d46ac7335c611707d2b2c5fcf8364610b66e` |
+
+The other files are as copied.
 
 ## Changes in cvc since the copy (not taken)
 
