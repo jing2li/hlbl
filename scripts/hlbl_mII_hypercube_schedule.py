@@ -10,7 +10,10 @@ the other with one cache. It prints
 
   * each chain's schedule, with a brute-force check that it has every
     |y| = 2n pair among its sources exactly once, and the chain overlaps,
-  * the number of solves and kernel sums, and node hours,
+  * with `2p2` lines: which solves are followed by 2+2 (the first solve of
+    each 2+2 source, in run order), and warnings for solved sites that are no
+    2+2 source and for 2+2 sources no chain solves,
+  * the number of solves, kernel sums and 2+2 sources, and node hours,
   * the peak propagator cache and the memory per rank,
   * a PRECHECK block: warnings and errors (a cache that does not fit on the
     file's process grid). Exit status 1 on errors.
@@ -24,6 +27,7 @@ Modes (each propagator is freed after its last pair):
 
 Memory model (per rank, GiB)
     GPU:   cache (3 blocks with cache = host) + solver + kernel stack + reserve
+           + 2+2 buffers
     host:  cache (cache = host only) + solver host memory
 
   cache         peak positions x 4608 B (2 flavours x 12 x 24 doubles) x local
@@ -31,9 +35,13 @@ Memory model (per rank, GiB)
   solver        QUDA's peak device memory, measured at 4-64 nodes
                 (QUDA_DEV_GIB); other node counts print "no data". --solver-gb
                 replaces it.
-  kernel stack  --kernel-stack-bytes x --gpu-sms x --gpu-threads-per-sm, which
-                the CUDA driver reserves at the 4-point kernel's first launch
+  kernel stack  the largest stack per thread of the kernels a run launches
+                (--kernel-stack-bytes, with 2p2 lines also
+                --kernel-stack-bytes-2p2) x --gpu-sms x --gpu-threads-per-sm:
+                the CUDA driver reserves it for every thread slot
   reserve       --reserve-gb: CUDA context, cuBLAS, MPI buffers. 0 by default.
+  2+2 buffers   with 2p2 lines: Pi (16 doubles per local site, not sparsened),
+                P1 and P23 of the largest target list
   solver host   --solver-host-gb: host memory beside the cache, the MaxRSS of
                 `hlbl_hypercube --dummy-run` with cache = device. 15 GiB by
                 default.
@@ -47,6 +55,8 @@ Usage (Python >= 3.8; the login node's python3 is 3.6)
     python3.11 hlbl_mII_hypercube_schedule.py --in hlbl.input --show-pairs 1
     python3.11 hlbl_mII_hypercube_schedule.py --in hlbl.input \\
         --t-invert 40.6 --t-kernel-sum 2.8 --t-setup 275 --configs 100
+    python3.11 hlbl_mII_hypercube_schedule.py --in hlbl.input \\
+        --t-invert 40.6 --t-kernel-sum 2.8 --t-2p2 52 --t-setup 275
 """
 
 import argparse
@@ -75,10 +85,12 @@ QUDA_DEV_GIB = ((2097152, 22.07), (1048576, 11.38), (524288, 5.89), (262144, 3.0
 
 GPU_MEM_GB = 95.6         # nvidia-smi memory.total of a GH200: 97871 MiB
 
-# Kernel stack (see "Memory model"): STACK of ker_4pt_contraction in
-# `cuobjdump --dump-resource-usage build/hlbl_hypercube`, and a GH200's SMs and
-# threads per SM.
-KERNEL_STACK_BYTES = 41280
+# Kernel stack (see "Memory model"): STACK of ker_4pt_contraction and of
+# kernel_p20/p21/p3 (2+2) in `cuobjdump --dump-resource-usage
+# build/hlbl_hypercube` (build of b677727; 41280 for ker_4pt_contraction
+# before), and a GH200's SMs and threads per SM.
+KERNEL_STACK_BYTES = 27112
+KERNEL_STACK_BYTES_2P2 = 16552
 GPU_SMS = 132
 GPU_THREADS_PER_SM = 2048
 SOLVER_HOST_GB = 15.0     # host memory beside the cache, per rank (README)
@@ -223,9 +235,19 @@ class Chain:
 
 
 @dataclass
+class Source2p2:
+    """One 2+2 source: after its first solve in the run, the 2+2 pieces of
+    every target. Global sites in [0, L)."""
+    source: tuple = ZERO
+    targets: list = field(default_factory=list)
+    line: int = 0              # line of the input file, for error messages
+
+
+@dataclass
 class Input:
     """Required keys are None (or empty) when not given; see check_required()."""
     chains: list = field(default_factory=list)
+    sources_2p2: list = field(default_factory=list)  # optional: `2p2` lines
     lattice: tuple = None
     procs: tuple = None
     cache: str = None
@@ -318,6 +340,65 @@ def _parse_chain(tokens):
     return c
 
 
+def _parse_targets(text):
+    """'(t,x,y,z),(t,x,y,z),...'"""
+    def bad():
+        return ValueError(f"targets must be (t,x,y,z),(t,x,y,z),...: '{text}'")
+
+    targets = []
+    i = 0
+    while True:
+        if i >= len(text) or text[i] != "(":
+            raise bad()
+        close = text.find(")", i)
+        if close < 0:
+            raise bad()
+        inner = text[i + 1:close]
+        if "(" in inner:
+            raise bad()
+        targets.append(parse_vec4(inner))
+        i = close + 1
+        if i == len(text):
+            return targets
+        if text[i] != ",":
+            raise bad()
+        i += 1
+
+
+def _parse_2p2(tokens):
+    """`2p2 source=t,x,y,z targets=(t,x,y,z),...`; `tokens` are the words
+    after "2p2"."""
+    g = Source2p2()
+    seen = set()
+    for token in tokens:
+        if "=" not in token:
+            raise ValueError(f"expected key=value, got '{token}'")
+        key, value = token.split("=", 1)
+        if key in seen:
+            raise ValueError(f"2p2 key '{key}' given twice")
+        seen.add(key)
+        if key == "source":
+            g.source = parse_vec4(value)
+        elif key == "targets":
+            g.targets = _parse_targets(value)
+        else:
+            raise ValueError(f"unknown 2p2 key '{key}'")
+    for required in ("source", "targets"):
+        if required not in seen:
+            raise ValueError(f"2p2 needs {required}=")
+    targets = set()
+    for t in g.targets:
+        if t in targets:
+            raise ValueError(f"2p2 target {fmt_vec4(t)} given twice")
+        targets.add(t)
+    return g
+
+
+def _check_inside(p, lattice, what):
+    if any(not 0 <= x < L for x, L in zip(p, lattice)):
+        raise ValueError(f"2p2 {what} {fmt_vec4(p)} is outside the lattice {fmt_vec4(lattice)}")
+
+
 def _set_global(inp, key, value):
     v = value.strip()
     if key == "cache":
@@ -353,6 +434,12 @@ def parse_input(text, name="input"):
             words = line.split()
             if words[0] == "chain":
                 inp.chains.append(_parse_chain(words[1:]))
+            elif words[0] == "2p2":
+                g = _parse_2p2(words[1:])
+                if any(other.source == g.source for other in inp.sources_2p2):
+                    raise ValueError(f"2p2 source {fmt_vec4(g.source)} given twice")
+                g.line = number
+                inp.sources_2p2.append(g)
             elif "=" in line:   # `key = value`, `key=value`
                 key, value = line.split("=", 1)
                 _set_global(inp, key.strip(), value)
@@ -360,6 +447,16 @@ def parse_input(text, name="input"):
                 _set_global(inp, words[0], line[len(words[0]):])
         except ValueError as e:
             raise InputError(f"{name}:{number}: {e}") from None
+    # 2+2 sites need the lattice, which may come after them; without one,
+    # check_required() reports it missing
+    if inp.lattice is not None:
+        for g in inp.sources_2p2:
+            try:
+                _check_inside(g.source, inp.lattice, "source")
+                for t in g.targets:
+                    _check_inside(t, inp.lattice, "target")
+            except ValueError as e:
+                raise InputError(f"{name}:{g.line}: {e}") from None
     return inp
 
 
@@ -434,6 +531,66 @@ def overlap_report(footprints):
             lines.append(f"  ... and {len(shared) - MAX_SHARED_SOURCES} more sources")
     if more:
         lines.append(f"... and {more} more pairs of chains")
+    return lines
+
+
+MAX_SITES_2P2 = 10         # sites listed per 2+2 warning
+
+
+@dataclass
+class Plan2p2:
+    """Which solves are followed by the 2+2 pieces: the first solve, in run
+    order (chains, windows, solve order), of each 2+2 source; sites compared
+    wrapped onto the lattice. As plan_2p2() in src/schedule.cpp."""
+    at: list           # per chain: {unwrapped solve position: 2+2 source index}
+    not_sources: list  # (wrapped site, chain, window): first solves of no 2+2 source
+    unsolved: list     # indices of 2+2 sources no chain solves
+
+
+def plan_2p2(schedules, sources, lattice):
+    index = {}
+    for i, s in enumerate(sources):
+        index.setdefault(wrap(s, lattice), i)
+    plan = Plan2p2([{} for _ in schedules], [], [])
+    solved = set()
+    for c, steps in enumerate(schedules):
+        for step in steps:
+            for src in step.sources:
+                p = wrap(src.position, lattice)
+                if p in solved:          # not the first solve
+                    continue
+                solved.add(p)
+                if p in index:
+                    plan.at[c].setdefault(src.position, index[p])
+                else:
+                    plan.not_sources.append((p, c, step.index))
+    plan.unsolved = [i for i, s in enumerate(sources) if wrap(s, lattice) not in solved]
+    return plan
+
+
+def report_2p2(plan, sources):
+    """The warnings about a Plan2p2 of the 2+2 sources `sources`; empty
+    without sources or without anything to warn about. Same lines as
+    report_2p2() in src/schedule.cpp."""
+    lines = []
+    if not sources:
+        return lines
+    n = len(plan.not_sources)
+    if n:
+        lines.append(f"WARNING: {n} solved source positions are not 2+2 sources "
+                     f"(no 2+2 computed for them)")
+        for p, chain, window in plan.not_sources[:MAX_SITES_2P2]:
+            lines.append(f"  {fmt_vec4(p)} in window {window} of chain {chain}")
+        if n > MAX_SITES_2P2:
+            lines.append(f"  ... and {n - MAX_SITES_2P2} more")
+    n = len(plan.unsolved)
+    if n:
+        lines.append(f"WARNING: {n} 2+2 sources are not solved by any chain "
+                     f"(no 2+2 computed for them)")
+        for i in plan.unsolved[:MAX_SITES_2P2]:
+            lines.append(f"  {fmt_vec4(sources[i])}")
+        if n > MAX_SITES_2P2:
+            lines.append(f"  ... and {n - MAX_SITES_2P2} more")
     return lines
 
 
@@ -617,17 +774,31 @@ def memory_report(stats_by_mode, lattice, procs, precision, sparsen,
                   gpu_mem_gb, host_mem_gb, gpus_per_node, cache_limit,
                   nodes_scan, local_multiple, solver_gb=None, reserve_gb=0.0,
                   stack=(KERNEL_STACK_BYTES, GPU_SMS, GPU_THREADS_PER_SM),
-                  solver_host_gb=SOLVER_HOST_GB, cache_mode="device"):
+                  solver_host_gb=SOLVER_HOST_GB, cache_mode="device",
+                  stack_2p2=None, max_targets_2p2=0):
     """Prints the memory tables. Returns the need and the budget per rank, in
     bytes, of the run on `procs` with `cache_mode` (interleaved order), or None
-    if QUDA was not measured at that local volume."""
+    if QUDA was not measured at that local volume. stack_2p2: stack per
+    thread of the 2+2 kernels, None without 2p2 lines; max_targets_2p2: the
+    largest target list."""
     volume = math.prod(lattice)
     bytes_complex = 16 if precision == "double" else 8
     kept_sites = volume / sparsen
     per_flavor = N_SPIN_COLOR * N_SPIN_COLOR * bytes_complex * kept_sites
     per_position = N_FLAVORS * per_flavor
-    stack_gb = math.prod(stack) / GB
+    # the driver reserves the largest stack of the kernels launched
+    stack_bytes = stack[0] if stack_2p2 is None else max(stack[0], stack_2p2)
+    stack_gb = stack_bytes * stack[1] * stack[2] / GB
     host_rest = solver_host_gb * GB
+    lmax = max(lattice)
+
+    def buffers_2p2(ranks):
+        """compute_2p2_gpu's device buffers per rank, bytes: Pi (16 doubles per
+        local site, not sparsened), P1, P23 and the targets. 0 without 2+2."""
+        if not max_targets_2p2:
+            return 0.0
+        n = max_targets_2p2
+        return (16 * volume / ranks + 64 * lmax + 3 * 64 * n) * 8 + 16 * n
 
     def fit(cache, block, res):
         """GPU: cache + res on the device. host: cache in pinned host memory
@@ -640,7 +811,8 @@ def memory_report(stats_by_mode, lattice, procs, precision, sparsen,
         return "-"
 
     print("\n" + "=" * 78)
-    print("MEMORY  (peak positions x position size + QUDA solver + kernel stack)")
+    print("MEMORY  (peak positions x position size + QUDA solver + kernel stack"
+          + (" + 2+2 buffers)" if max_targets_2p2 else ")"))
     print("=" * 78)
     print(f"lattice {tuple(lattice)} = {volume:,} sites, {precision} precision")
     if sparsen > 1:
@@ -652,14 +824,26 @@ def memory_report(stats_by_mode, lattice, procs, precision, sparsen,
         print("solver: QUDA peak measured with time_invert (4/8/16/32/64 nodes, 128x64^3)")
     else:
         print(f"solver: {solver_gb:g} GB (--solver-gb)")
-    print(f"kernel stack: {stack[0]} B x {stack[1]} SMs x {stack[2]} threads = "
-          f"{stack_gb:.2f} GB per GPU")
-    print("  (--kernel-stack-bytes: STACK of ker_4pt_contraction in `cuobjdump "
-          "--dump-resource-usage build/hlbl_hypercube`;")
+    if stack_2p2 is None:
+        print(f"kernel stack: {stack[0]} B x {stack[1]} SMs x {stack[2]} threads = "
+              f"{stack_gb:.2f} GB per GPU")
+        print("  (--kernel-stack-bytes: STACK of ker_4pt_contraction in `cuobjdump "
+              "--dump-resource-usage build/hlbl_hypercube`;")
+    else:
+        which = "4-point" if stack[0] >= stack_2p2 else "2+2"
+        print(f"kernel stack: max(4-point {stack[0]} B, 2+2 {stack_2p2} B) = {stack_bytes} B "
+              f"({which}) x {stack[1]} SMs x {stack[2]} threads = {stack_gb:.2f} GB per GPU")
+        print("  (the driver reserves the largest stack of the kernels launched;")
+        print("   --kernel-stack-bytes, --kernel-stack-bytes-2p2: STACK of ker_4pt_contraction, "
+              "kernel_p20/p21/p3 in `cuobjdump --dump-resource-usage build/hlbl_hypercube`;")
     print("   --gpu-sms, --gpu-threads-per-sm: multiProcessorCount and "
           "maxThreadsPerMultiProcessor)")
     if reserve_gb:
         print(f"plus {reserve_gb:g} GB flat reserve (--reserve-gb)")
+    if max_targets_2p2:
+        print(f"2+2 buffers: Pi 128 B x local sites (not sparsened), P1 and P23 of "
+              f"{max_targets_2p2} targets = {buffers_2p2(math.prod(procs)) / GB:.2f} GB "
+              f"per rank on procs {tuple(procs)}")
     print(f"host beside the cache: {solver_host_gb:g} GB per rank (--solver-host-gb; the "
           f"MaxRSS of a --dummy-run with cache = device)")
     print()
@@ -672,7 +856,8 @@ def memory_report(stats_by_mode, lattice, procs, precision, sparsen,
     print(f"  '<= limit' compares positions with --cache-limit {cache_limit}.")
 
     print(f"\n  GB per rank by node count ({gpus_per_node} GPUs = ranks per node): "
-          f"cache, and cache + solver + kernel stack = total")
+          f"cache, and cache + solver + kernel stack"
+          + (" + 2+2 buffers" if max_targets_2p2 else "") + " = total")
     print(f"  fits: GPU = everything on the device, host = cache in pinned host memory "
           f"(device keeps solver + stack + 3 blocks), - = neither")
     print(f"  grid: local extents multiples of T {local_multiple[0]}, "
@@ -690,7 +875,7 @@ def memory_report(stats_by_mode, lattice, procs, precision, sparsen,
         if solver is None:
             print(f"  {nodes:>5} {ranks:>5}  {grid_s:<10} {'no data':>7}")
             continue
-        res_b = (solver + stack_gb + reserve_gb) * GB
+        res_b = (solver + stack_gb + reserve_gb) * GB + buffers_2p2(ranks)
         line = f"  {nodes:>5} {ranks:>5}  {grid_s:<10} {solver:>7.2f}"
         for st in stats_by_mode.values():
             cache = st.peak_cache * per_position / ranks
@@ -707,7 +892,7 @@ def memory_report(stats_by_mode, lattice, procs, precision, sparsen,
     if solver is None:
         return None
     cache = stats_by_mode["interleaved"].peak_cache * per_position / ranks
-    res = (solver + stack_gb + reserve_gb) * GB
+    res = (solver + stack_gb + reserve_gb) * GB + buffers_2p2(ranks)
     return {
         "ranks": ranks,
         "gpu_need": (cache if cache_mode == "device" else 3 * per_position / ranks) + res,
@@ -718,33 +903,41 @@ def memory_report(stats_by_mode, lattice, procs, precision, sparsen,
 
 
 def cost_report(stats, n_chains, configs, procs, gpus_per_node,
-                t_invert, t_kernel_sum, t_setup):
-    """`stats`: the totals of the input file's `n_chains` chains."""
+                t_invert, t_kernel_sum, t_setup, n_2p2=0, n_targets_2p2=0, t_2p2=None):
+    """`stats`: the totals of the input file's `n_chains` chains. n_2p2: the
+    2+2 sources computed (plan_2p2), with n_targets_2p2 targets in all."""
     ranks = math.prod(procs)
     nodes = ranks / gpus_per_node
     n_prop = stats.n_propagators
     n_ks = stats.n_kernel_sums
+    twop = f", {n_2p2} 2+2 sources ({n_targets_2p2} targets)" if n_2p2 else ""
 
     print("\n" + "=" * 78)
     print("CALL COUNTS AND NODE HOURS")
     print("=" * 78)
     print(f"per config: {n_chains} chain(s) -> {n_prop} propagators ({stats.n_solves} solves), "
-          f"{stats.n_pairs} pairs, {n_ks} kernel-sum calls")
+          f"{stats.n_pairs} pairs, {n_ks} kernel-sum calls{twop}")
     print(f"all:        {configs} config(s) -> {n_prop * configs} propagators, "
-          f"{n_ks * configs} kernel-sum calls")
+          f"{n_ks * configs} kernel-sum calls"
+          + (f", {n_2p2 * configs} 2+2 sources" if n_2p2 else ""))
 
-    if t_invert is None or t_kernel_sum is None:
-        print("\n(pass --t-invert and --t-kernel-sum for node hours)")
-        print("node_hours = nodes * configs * (t_setup + N_prop*t_invert + N_ks*t_kernel_sum) / 3600")
+    formula = "t_setup + N_prop*t_invert + N_ks*t_kernel_sum" + (" + N_2p2*t_2p2" if n_2p2 else "")
+    if t_invert is None or t_kernel_sum is None or (n_2p2 and t_2p2 is None):
+        need = "--t-invert and --t-kernel-sum" + (" and --t-2p2" if n_2p2 else "")
+        print(f"\n(pass {need} for node hours)")
+        print(f"node_hours = nodes * configs * ({formula}) / 3600")
         return
 
     t_inv = n_prop * t_invert
     t_ks = n_ks * t_kernel_sum
-    t_cfg = t_setup + t_inv + t_ks
+    t_two = n_2p2 * t_2p2 if n_2p2 else 0.0
+    t_cfg = t_setup + t_inv + t_ks + t_two
     print(f"\nper config on {nodes:g} nodes (serial wall time):")
     print(f"  setup         {t_setup:>12.0f} s")
     print(f"  inversions    {t_inv:>12.0f} s   ({n_prop} x {t_invert:g} s)")
     print(f"  kernel sums   {t_ks:>12.0f} s   ({n_ks} x {t_kernel_sum:g} s)")
+    if n_2p2:
+        print(f"  2+2           {t_two:>12.0f} s   ({n_2p2} x {t_2p2:g} s)")
     print(f"  total         {t_cfg:>12.0f} s = {t_cfg / 3600:.2f} h "
           f"-> {nodes * t_cfg / 3600:.1f} node-h")
     print(f"all {configs} configs: {configs * nodes * t_cfg / 3600:,.0f} node-h")
@@ -793,6 +986,9 @@ def main():
                    help="stack per thread of the 4-point kernel, reserved for every thread "
                         "slot of the GPU: the STACK column of ker_4pt_contraction in "
                         "`cuobjdump --dump-resource-usage build/hlbl_hypercube`")
+    g.add_argument("--kernel-stack-bytes-2p2", type=int, default=KERNEL_STACK_BYTES_2P2,
+                   help="stack per thread of the 2+2 kernels (with 2p2 lines): the STACK "
+                        "column of kernel_p20/p21/p3; the larger of the two stacks counts")
     g.add_argument("--reserve-gb", type=float, default=0.0,
                    help="flat extra per rank (CUDA context, cuBLAS and MPI buffers)")
     g.add_argument("--solver-host-gb", type=float, default=SOLVER_HOST_GB,
@@ -805,6 +1001,10 @@ def main():
     g.add_argument("--t-kernel-sum", type=float, default=None,
                    help="per kernel-sum call, one flavor (kernel-sum + dzu-dzsu); "
                         "measure it with the same sparsening")
+    g.add_argument("--t-2p2", type=float, default=None,
+                   help="per 2+2 source with all its targets, flavour 0 (the 2+2-total "
+                        "region of time_2p2, or the 2+2 line of --dummy-run); measure it "
+                        "with the largest target list of the run")
     g.add_argument("--t-setup", type=float, default=0.0,
                    help="per config, paid once however many chains run (gauge read, MG setup)")
     g.add_argument("--configs", type=int, default=1)
@@ -875,6 +1075,29 @@ def main():
         warnings.append(overlap[0][len("WARNING: "):])
     print_orientations([pair for steps in schedules for pair in all_pairs(steps)])
 
+    # ---- 2+2: the first solve of each 2p2 source, in run order
+    n_2p2 = n_targets_2p2 = max_targets_2p2 = 0
+    if inp.sources_2p2:
+        sources = [g.source for g in inp.sources_2p2]
+        p2p2 = plan_2p2(schedules, sources, lattice)
+        computed = [i for at in p2p2.at for i in at.values()]
+        n_2p2 = len(computed)
+        n_targets_2p2 = sum(len(inp.sources_2p2[i].targets) for i in computed)
+        counts = [len(g.targets) for g in inp.sources_2p2]
+        max_targets_2p2 = max(counts)
+        print(f"\n2+2: {len(sources)} sources in the file ({sum(counts)} targets, "
+              f"{min(counts)} to {max_targets_2p2} per source); {n_2p2} computed, at their "
+              f"first solve ({n_targets_2p2} targets)")
+        if multi:
+            for c, at in enumerate(p2p2.at):
+                print(f"  chain {c}: {len(at)} sources")
+        checks.append(f"2+2: {n_2p2} of {len(sources)} sources computed, each once")
+        report = report_2p2(p2p2, sources)
+        for line in report:
+            print(line)
+            if line.startswith("WARNING: "):
+                warnings.append(line[len("WARNING: "):])
+
     # ---- counts: chains run one after the other with one cache
     per_chain = [{mode: run(steps, lattice, mode) for mode in MODES}
                  for steps in schedules]
@@ -912,7 +1135,8 @@ def main():
         args.gpu_mem_gb, args.host_mem_gb, args.gpus_per_node, args.cache_limit,
         args.nodes_scan, tuple(args.local_multiple), args.solver_gb, args.reserve_gb,
         (args.kernel_stack_bytes, args.gpu_sms, args.gpu_threads_per_sm),
-        args.solver_host_gb, cache_mode)
+        args.solver_host_gb, cache_mode,
+        args.kernel_stack_bytes_2p2 if inp.sources_2p2 else None, max_targets_2p2)
     where = (f"{math.prod(procs) / args.gpus_per_node:g} nodes ({math.prod(procs)} ranks), "
              f"cache = {cache_mode}")
     if chosen is None:
@@ -927,7 +1151,8 @@ def main():
         else:
             errors.append(line + ": does not fit")
     cost_report(reference, len(chains), args.configs, procs, args.gpus_per_node,
-                args.t_invert, args.t_kernel_sum, args.t_setup)
+                args.t_invert, args.t_kernel_sum, args.t_setup,
+                n_2p2, n_targets_2p2, args.t_2p2)
 
     print("\n" + "=" * 78)
     print("PRECHECK")

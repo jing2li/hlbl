@@ -2,7 +2,8 @@
 # compare_schedule.sh: checks the C++ schedules (sanity_check/schedule_dump)
 # against the Python reference (hlbl_mII_hypercube_schedule.py): several
 # directions, strides and step counts; counts, totals and overlap report of
-# multi-chain input files; and the error messages for bad input files.
+# multi-chain input files; the 2+2 plan and warnings of 2p2 lines; and the
+# error messages for bad input files.
 #
 # Usage: scripts/compare_schedule.sh <path-to-schedule_dump>
 
@@ -39,6 +40,7 @@ keys = ('n_propagators', 'n_solves', 'n_pairs', 'n_kernel_sums')
 total = dict.fromkeys(keys, 0)
 peak = 0
 footprints = []
+schedules = []
 for c, ch in enumerate(chains):
     n = ch.steps if ch.steps >= 0 else hs.max_steps_without_wrap(ch.direction, ch.stride, lattice, ch.start)
     steps = hs.build_schedule(ch.direction, ch.stride, n, ch.start)
@@ -61,10 +63,28 @@ for c, ch in enumerate(chains):
                            for src in steps[window].sources for q in src.partners):
             print('edge ' + vec(a) + ' ' + vec(b))
     footprints.append(hs.footprint(steps, lattice))
+    schedules.append(steps)
 if len(chains) > 1:
     print(f'total chains={len(chains)} ' + ' '.join(f'{k}={v}' for k, v in total.items())
           + f' peak_cache={peak}')
     for line in hs.overlap_report(footprints):
+        print(line)
+if inp.sources_2p2:
+    sources = [g.source for g in inp.sources_2p2]
+    plan = hs.plan_2p2(schedules, sources, lattice)
+    n_sources = n_targets = 0
+    for c, steps in enumerate(schedules):
+        for step in steps:
+            for src in step.sources:
+                i = plan.at[c].get(src.position)
+                if i is None:
+                    continue
+                g = inp.sources_2p2[i]
+                print(f'2p2 chain={c} window={step.index} source={vec(g.source)} targets={len(g.targets)}')
+                n_sources += 1
+                n_targets += len(g.targets)
+    print(f'2p2 total sources={n_sources} targets={n_targets}')
+    for line in hs.report_2p2(plan, sources):
         print(line)
 "
 }
@@ -138,6 +158,33 @@ for f in multi many; do
 done
 
 # ---------------------------------------------------------------------------
+# 2p2 lines: which solve computes each 2+2, and the warnings
+# ---------------------------------------------------------------------------
+# (6,6,6,6): window 3 of chain 0, again window 0 of chain 3 -> 2+2 in chain 0
+# only. (10,10,10,10): first solved by chain 3. (1,1,1,1): no chain solves it
+# (all sites are even). Most solved sites are no 2+2 source (list cut at 10).
+{
+  cat "$tmp/multi.input"
+  echo "2p2 source=6,6,6,6 targets=(0,0,0,0),(2,2,2,2)"
+  echo "2p2 source=0,0,0,0 targets=(6,6,6,6)"
+  echo "2p2 source=10,10,10,10 targets=(6,6,6,6),(0,0,0,0),(4,4,4,4)"
+  echo "2p2 source=1,1,1,1 targets=(0,0,0,0)"
+} > "$tmp/multi2p2.input"
+
+out="$("$BIN" "$tmp/multi2p2.input")"
+if ! grep -q '^2p2 chain=0 window=3 source=(6,6,6,6) targets=2$' <<<"$out" ||
+   grep -q '^2p2 chain=3 .*source=(6,6,6,6)' <<<"$out" ||
+   ! grep -q '^2p2 chain=3 .*source=(10,10,10,10)' <<<"$out" ||
+   ! grep -q '^  (1,1,1,1)$' <<<"$out" ||
+   ! grep -q '^  \.\.\. and [0-9]* more$' <<<"$out"; then
+  echo "FAIL  multi2p2.input: first solves, unsolved source or the list cut"
+  echo "$out" | grep '2p2\|WARNING\|^  (1,1'
+  fail=1
+else
+  compare "$tmp/multi2p2.input" -1 "2p2 lines on several chains (multi2p2.input)"
+fi
+
+# ---------------------------------------------------------------------------
 # Bad input files: the same message from both parsers
 # ---------------------------------------------------------------------------
 c='chain start=0,0,0,0 dir=1,1,1,1 stride=4'
@@ -169,6 +216,21 @@ bad=(
   $'# comment\n\ncache = host\n'"$c steps=a"
   "$c"
   "$header"$'\nlattice = 8,8,8,8'
+  "2p2 targets=(1,1,1,1)"
+  "2p2 source=1,1,1,1"
+  "2p2 source=1,1,1,1 targets=(2,2,2,2) colour=2"
+  "2p2 source=1,1,1,1 source=2,2,2,2 targets=(1,1,1,1)"
+  "2p2 source=1,1,1,1 targets=2,2,2,2"
+  "2p2 source=1,1,1,1 targets=(2,2,2,2)(3,3,3,3)"
+  "2p2 source=1,1,1,1 targets=(2,2,2,2),"
+  "2p2 source=1,1,1,1 targets=((2,2,2,2))"
+  "2p2 source=1,1,1,1 targets=(2,2,2)"
+  "2p2 source=1,1,1 targets=(2,2,2,2)"
+  "2p2 source=1,1,1,1 targets=(2,2,2,2),(3,3,3,3),(2,2,2,2)"
+  "2p2 source=1,1,1,1 targets=(2,2,2,2) extra"
+  $'2p2 source=1,1,1,1 targets=(2,2,2,2)\n2p2 source=1,1,1,1 targets=(3,3,3,3)'
+  $'lattice = 8,8,8,8\n2p2 source=8,0,0,0 targets=(1,1,1,1)'
+  $'2p2 source=0,0,0,0 targets=(1,1,1,1),(1,1,1,-1)\nlattice = 8,8,8,8'
 )
 for text in "${bad[@]}"; do
   printf '%s\n' "$text" > "$tmp/bad.input"

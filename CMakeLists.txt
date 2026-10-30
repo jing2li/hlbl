@@ -124,7 +124,8 @@ set_target_properties(check_pair PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 
 # The whole program on random fields: one chain (1 shift: 15 + 65 = 80 pairs,
-# device cache) and two chains (80 + 145 pairs, host cache)
+# device cache) and two chains (80 + 145 pairs, host cache, 2+2 at 3 sources
+# with 6 targets)
 set(HLBL_TEST_INPUTS ${CMAKE_CURRENT_SOURCE_DIR}/sanity_check)
 add_test(NAME hypercube_random_fields
   COMMAND hlbl_hypercube --in ${HLBL_TEST_INPUTS}/one_chain.input)
@@ -134,12 +135,12 @@ set_tests_properties(hypercube_random_fields PROPERTIES
 add_test(NAME hypercube_random_fields_multi
   COMMAND hlbl_hypercube --in ${HLBL_TEST_INPUTS}/multi_chain.input)
 set_tests_properties(hypercube_random_fields_multi PROPERTIES
-  PASS_REGULAR_EXPRESSION "done: 225 pairs \\(225 results\\) in 2 chains")
+  PASS_REGULAR_EXPRESSION "done: 225 pairs \\(225 results\\) in 2 chains.*2\\+2: 3 sources, 6 targets")
 
 add_test(NAME hypercube_dummy_run
   COMMAND hlbl_hypercube --dummy-run --in ${HLBL_TEST_INPUTS}/multi_chain.input)
 set_tests_properties(hypercube_dummy_run PROPERTIES
-  PASS_REGULAR_EXPRESSION "dummy run: all checks passed")
+  PASS_REGULAR_EXPRESSION "one 2\\+2 source \\(3 targets\\).*dummy run: all checks passed")
 
 # The C++ schedules against the Python reference
 hlbl_executable(schedule_dump sanity_check/schedule_dump.cpp)

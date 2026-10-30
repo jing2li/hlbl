@@ -5,8 +5,10 @@
 // (scripts/compare_schedule.sh checks).
 
 #include <array>
+#include <map>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -86,5 +88,28 @@ ScheduleStats simulate(const Schedule& steps, Mode mode);
 // scripts/hlbl_mII_hypercube_schedule.py.
 std::vector<std::string> overlap_report(const std::vector<Schedule>& chains,
                                         const Vec4& lattice);
+
+// Which solves are followed by the 2+2 pieces: the first solve, in run order
+// (chains in input order, windows, solve order), of each 2+2 source. Sites
+// are compared wrapped onto `lattice`, so a site solved again (by another
+// chain, or by a chain that wraps) gets no second 2+2.
+struct Plan2p2 {
+  // per chain: solve position (unwrapped, as in the schedule) -> index into
+  // the 2+2 sources
+  std::vector<std::map<Vec4, int>> at;
+  // first solves of sites that are no 2+2 source: wrapped site, chain, window
+  std::vector<std::tuple<Vec4, int, int>> not_sources;
+  std::vector<int> unsolved;  // indices of 2+2 sources that no chain solves
+};
+
+Plan2p2 plan_2p2(const std::vector<Schedule>& chains,
+                 const std::vector<Vec4>& sources, const Vec4& lattice);
+
+// The warnings about a Plan2p2 of the 2+2 sources `sources`: solved sites
+// that are no 2+2 source, and 2+2 sources that no chain solves, each with its
+// first 10 sites. Empty if `sources` is empty or there is nothing to warn
+// about. Same lines as report_2p2() in scripts/hlbl_mII_hypercube_schedule.py.
+std::vector<std::string> report_2p2(const Plan2p2& plan,
+                                    const std::vector<Vec4>& sources);
 
 }  // namespace hlbl

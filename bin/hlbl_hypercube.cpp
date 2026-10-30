@@ -3,9 +3,10 @@
 //   hlbl_hypercube --in FILE [--dummy-run [--tune]]
 //
 // For each chain of the input file (start, direction, stride, steps) it solves
-// the propagators (tmLQCD/QUDA, or random numbers with random_fields), contracts
-// every pair and writes one HDF5 file. Gauge field and multigrid are set up
-// once. Everything else comes from the input file.
+// the propagators (tmLQCD/QUDA, or random numbers with random_fields), computes
+// the 2+2 pieces of the 2p2 sources at their first solve, contracts every pair
+// and writes one HDF5 file. Gauge field and multigrid are set up once.
+// Everything else comes from the input file.
 //
 // A production run checks only its input. --dummy-run does the full setup,
 // every check, and the memory peak of a run for real (cache filled, one
@@ -98,10 +99,14 @@ hlbl::PropagatorCache::Residency residency(const hlbl::Input& in) {
                               : hlbl::PropagatorCache::Residency::kHost;
 }
 
-// The chains as they run (steps=auto resolved) and their schedules.
+// The chains as they run (steps=auto resolved), their schedules, and which
+// solves are followed by 2+2.
 struct Plan {
   std::vector<hlbl::Chain> chains;
   std::vector<hlbl::Schedule> schedules;
+  std::vector<hlbl::Vec4> sources_2p2;  // the 2p2 lines' sources
+  hlbl::Plan2p2 plan_2p2;
+  int max_targets_2p2 = 0;              // 0: no 2+2
 };
 
 Plan make_plan(const hlbl::Input& in, const hlbl::Vec4& global) {
@@ -115,6 +120,12 @@ Plan make_plan(const hlbl::Input& in, const hlbl::Vec4& global) {
     plan.schedules.push_back(hlbl::build_schedule(chain.direction, chain.stride,
                                                   chain.steps, chain.start));
   }
+  for (const hlbl::Source2p2& g : in.sources_2p2) {
+    plan.sources_2p2.push_back(g.source);
+    plan.max_targets_2p2 =
+        std::max(plan.max_targets_2p2, static_cast<int>(g.targets.size()));
+  }
+  plan.plan_2p2 = hlbl::plan_2p2(plan.schedules, plan.sources_2p2, global);
   return plan;
 }
 
@@ -141,6 +152,13 @@ void print_run_info(const hlbl::Input& in, const hlbl::Lattice& lattice,
   std::printf("# [hlbl] muon mass %.10g MeV, lattice spacing %.10g fm: xunit = m_mu a = %.10g\n",
               in.muon_mass, in.lattice_spacing,
               hlbl::xunit(in.muon_mass, in.lattice_spacing));
+  if (!in.sources_2p2.empty()) {
+    long long targets = 0;
+    for (const hlbl::Source2p2& g : in.sources_2p2) targets += g.targets.size();
+    std::printf("# [hlbl] 2+2: %zu sources (%lld targets), %zu solved by the chains\n",
+                in.sources_2p2.size(), targets,
+                in.sources_2p2.size() - plan.plan_2p2.unsolved.size());
+  }
   std::fflush(stdout);
 }
 
@@ -172,6 +190,7 @@ void run(const Options& o, const hlbl::Lattice& lattice, int nconf,
     info.muon_mass = in.muon_mass;
     info.lattice_spacing = in.lattice_spacing;
     info.xunit = xunit;
+    info.with_2p2 = !in.sources_2p2.empty();
     writer = std::make_unique<hlbl::ResultWriter>(in.out, info);
     timing = std::make_unique<hlbl::TimingLog>(timing_path(in));
   }
@@ -180,6 +199,7 @@ void run(const Options& o, const hlbl::Lattice& lattice, int nconf,
   ro.residency = residency(in);
   ro.xunit = xunit;
   ro.verbose = true;
+  ro.sources_2p2 = in.sources_2p2;
   hlbl::RunStats stats;
   double const t0 = MPI_Wtime();
   auto results = hlbl::run_chains(lattice, plan.schedules, ro, provider,
@@ -197,6 +217,11 @@ void run(const Options& o, const hlbl::Lattice& lattice, int nconf,
                 stats.positions_solved ? stats.seconds_solve / stats.positions_solved : 0.,
                 stats.seconds_kernel_sum,
                 stats.pairs ? stats.seconds_kernel_sum / stats.pairs : 0.);
+    if (!in.sources_2p2.empty()) {
+      std::printf("# [hlbl] 2+2: %d sources, %lld targets, %.1f s (%.2f s per source)\n",
+                  stats.pieces_2p2, stats.targets_2p2, stats.seconds_2p2,
+                  stats.pieces_2p2 ? stats.seconds_2p2 / stats.pieces_2p2 : 0.);
+    }
     std::printf("# [hlbl] results in %s\n", in.out.c_str());
   }
   free_QED_temps(&kqed_t);
@@ -248,6 +273,9 @@ int dummy_run(const Options& o, const hlbl::Lattice& lattice,
     for (const std::string& line : hlbl::overlap_report(plan.schedules, global)) {
       std::printf("# [hlbl] %s\n", line.c_str());
     }
+    for (const std::string& line : hlbl::report_2p2(plan.plan_2p2, plan.sources_2p2)) {
+      std::printf("# [hlbl] %s\n", line.c_str());
+    }
   }
 
   // ---- the files a run writes (rank 0 writes them)
@@ -269,8 +297,10 @@ int dummy_run(const Options& o, const hlbl::Lattice& lattice,
     hlbl::Contractor contractor(lattice, kqed_t);
 
     // ---- memory estimate, after the contraction kernels took their stack
-    unsigned long long reserved = contractor.reserve_kernel_memory();
-    auto const mem = hlbl::estimate_memory(lattice, peak_positions, residency(in));
+    bool const with_2p2 = plan.max_targets_2p2 > 0;
+    unsigned long long reserved = contractor.reserve_kernel_memory(with_2p2);
+    auto const mem = hlbl::estimate_memory(lattice, peak_positions, residency(in),
+                                           plan.max_targets_2p2);
     unsigned long long device_free = mem.device_available;
     unsigned long long host_free = mem.host_available;
     MPI_Allreduce(MPI_IN_PLACE, &reserved, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm);
@@ -282,6 +312,10 @@ int dummy_run(const Options& o, const hlbl::Lattice& lattice,
                   "stack (most on any rank)\n", gib(reserved));
       std::printf("# [hlbl] one position %.2f GiB per rank, peak %d positions, %s cache\n",
                   gib(mem.bytes_per_position), peak_positions, in.cache.c_str());
+      if (with_2p2) {
+        std::printf("# [hlbl] 2+2 work buffers %.2f GiB per rank (up to %d targets)\n",
+                    gib(mem.bytes_2p2), plan.max_targets_2p2);
+      }
       std::printf("# [hlbl] device: %.1f GiB needed, %.1f GiB free (least on any rank)\n",
                   gib(mem.device_needed), gib(device_free));
       std::printf("# [hlbl] host:   %.1f GiB needed, %.1f GiB available (least on any rank)\n",
@@ -320,9 +354,22 @@ int dummy_run(const Options& o, const hlbl::Lattice& lattice,
         failed = 1;
       } else {
         double t0 = MPI_Wtime();
-        int const iterations = provider.compute(site, cache.begin_insert(site));
-        cache.end_insert(site);
+        hlbl::DeviceBuffer<double>& dest = cache.begin_insert(site);
+        int const iterations = provider.compute(site, dest);
         double const t_solve = MPI_Wtime() - t0;
+        // as in a run: the 2+2 of the largest target list, before the block
+        // is stored
+        double t_2p2 = 0;
+        if (with_2p2) {
+          auto const largest = std::max_element(
+              in.sources_2p2.begin(), in.sources_2p2.end(),
+              [](const auto& a, const auto& b) { return a.targets.size() < b.targets.size(); });
+          t0 = MPI_Wtime();
+          contractor.pieces_2p2(dest.get(), site, largest->targets,
+                                hlbl::xunit(in.muon_mass, in.lattice_spacing));
+          t_2p2 = MPI_Wtime() - t0;
+        }
+        cache.end_insert(site);
         hlbl::Vec4 const n = {plan.chains[0].stride, plan.chains[0].stride,
                               plan.chains[0].stride, plan.chains[0].stride};
         const double* d_y = cache.device_ptr(site, 0);
@@ -335,6 +382,10 @@ int dummy_run(const Options& o, const hlbl::Lattice& lattice,
           std::printf("# [hlbl] peak of a run: %d positions cached, one position solved "
                       "in %.1f s (%d iterations), one pair contracted in %.2f s: fits\n",
                       cache.size(), t_solve, iterations, t_pair);
+          if (with_2p2) {
+            std::printf("# [hlbl] one 2+2 source (%d targets) in %.2f s\n",
+                        plan.max_targets_2p2, t_2p2);
+          }
           if (o.tune) {
             std::printf("# [hlbl] (the times include QUDA's tuning)\n");
           }

@@ -1,5 +1,5 @@
-// Checks the input file parser: globals, chains, defaults, comments, required
-// keys and every error case. Needs no GPU.
+// Checks the input file parser: globals, chains, 2p2 lines, defaults,
+// comments, required keys and every error case. Needs no GPU.
 
 #include "hlbl/input.hpp"
 
@@ -154,6 +154,51 @@ int main() {
   HLBL_CHECK(fails("lattice_spacing = abc", "not a number"));
   HLBL_CHECK(fails("lattice_spacing = inf", "not a number"));
   HLBL_CHECK(fails("muon_mass = 105.66 MeV", "not a number"));  // units go in a comment
+
+  // 2p2 lines: keys in any order, the line kept for later messages; optional
+  {
+    Input in = parse(complete +
+                     "2p2 source=1,1,1,1 targets=(4,4,4,4),(5,5,5,5)\n"
+                     "2p2 targets=(0,0,0,0) source=2,2,2,2\n");
+    HLBL_CHECK(in.sources_2p2.size() == 2);
+    const Source2p2& a = in.sources_2p2[0];
+    HLBL_CHECK((a.source == Vec4{1, 1, 1, 1}));
+    HLBL_CHECK(a.targets.size() == 2);
+    HLBL_CHECK((a.targets[0] == Vec4{4, 4, 4, 4} && a.targets[1] == Vec4{5, 5, 5, 5}));
+    HLBL_CHECK(a.line == 14);  // `complete` has 13 lines
+    const Source2p2& b = in.sources_2p2[1];
+    HLBL_CHECK((b.source == Vec4{2, 2, 2, 2}) && b.targets.size() == 1 && b.line == 15);
+    check_required(in, "test");
+    HLBL_CHECK(parse(complete).sources_2p2.empty());
+  }
+
+  // errors in 2p2 lines
+  const std::string ok2 = "2p2 source=1,1,1,1 targets=(2,2,2,2)";
+  HLBL_CHECK(!fails(ok2));
+  HLBL_CHECK(fails("2p2 targets=(2,2,2,2)", "2p2 needs source="));
+  HLBL_CHECK(fails("2p2 source=1,1,1,1", "2p2 needs targets="));
+  HLBL_CHECK(fails(ok2 + " colour=1", "unknown 2p2 key 'colour'"));
+  HLBL_CHECK(fails(ok2 + " source=3,3,3,3", "2p2 key 'source' given twice"));
+  HLBL_CHECK(fails(ok2 + " extra", "key=value"));
+  HLBL_CHECK(fails("2p2 source=1,1,1,1 targets=2,2,2,2", "targets must be"));
+  HLBL_CHECK(fails("2p2 source=1,1,1,1 targets=(2,2,2,2)(3,3,3,3)", "targets must be"));
+  HLBL_CHECK(fails("2p2 source=1,1,1,1 targets=(2,2,2,2),", "targets must be"));
+  HLBL_CHECK(fails("2p2 source=1,1,1,1 targets=(2,2,2,2", "targets must be"));
+  HLBL_CHECK(fails("2p2 source=1,1,1,1 targets=((2,2,2,2))", "targets must be"));
+  HLBL_CHECK(fails("2p2 source=1,1,1,1 targets=(2,2,2)", "4 integers"));
+  HLBL_CHECK(fails("2p2 source=1,1,1,1 targets=(2,2,2,x)", "integer"));
+  HLBL_CHECK(fails("2p2 source=1,1,1 targets=(2,2,2,2)", "4 integers"));
+  HLBL_CHECK(fails("2p2 source=1,1,1,1 targets=(2,2,2,2),(3,3,3,3),(2,2,2,2)",
+                   "2p2 target (2,2,2,2) given twice"));
+  HLBL_CHECK(fails(ok2 + "\n" + ok2, "test:2: 2p2 source (1,1,1,1) given twice"));
+  // sites in [0, L), checked once the file is read; the message names the
+  // 2p2 line, also when the lattice comes after it; no lattice, no check
+  HLBL_CHECK(!fails("lattice = 4,4,4,4\n" + ok2));
+  HLBL_CHECK(fails("lattice = 4,4,4,4\n2p2 source=-1,0,0,0 targets=(2,2,2,2)",
+                   "test:2: 2p2 source (-1,0,0,0) is outside the lattice (4,4,4,4)"));
+  HLBL_CHECK(fails("2p2 source=1,1,1,1 targets=(2,2,2,4)\nlattice = 4,4,4,4",
+                   "test:1: 2p2 target (2,2,2,4) is outside the lattice (4,4,4,4)"));
+  HLBL_CHECK(!fails("2p2 source=9,9,9,9 targets=(9,9,9,9)"));
 
   // the message names the file and the line
   HLBL_CHECK(fails("\n# comment\nchain start=0,0,0,0 dir=1,1,1,3 stride=4\n", "test:3:"));

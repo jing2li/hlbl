@@ -36,3 +36,12 @@ out    = result.h5             # result file
 chain start=0,0,0,0    dir=1,1,1,1   stride=4 steps=30
 chain start=32,0,0,0   dir=1,-1,1,1  stride=4 steps=30
 chain start=0,16,0,0   dir=1,1,1,1   stride=6
+
+# ---- 2+2 (optional) ---------------------------------------------------------
+# 2p2 source=t,x,y,z targets=(t,x,y,z),(t,x,y,z),...
+#   right after the first solve of `source` in the run, its 2+2 pieces (P1,
+#   and P2_0, P2_1, P3 for every target), then its pairs as usual. One line
+#   per source; sites in [0, L). The source must be solved by a chain; a pair
+#   {A,B} needs A with target B and B with target A (see the README).
+# 2p2 source=4,4,4,4 targets=(8,8,8,8),(0,0,0,0)
+# 2p2 source=8,8,8,8 targets=(4,4,4,4)

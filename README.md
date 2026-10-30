@@ -5,7 +5,8 @@ to the muon g−2 in position space (QED kernel LΛ, Λ = 0.4). It contracts all
 pairs of point sources at one separation |y| = 2n, taken from a
 sliding-hypercube schedule that reuses most propagators from step to step. One
 job runs a list of such chains; the gauge field is read and the multigrid set
-up once.
+up once. With `2p2` lines it also computes the 2+2 pieces (P1, P2_0, P2_1, P3)
+of chosen sources, right after their first solve.
 
 Propagators are solved with tmLQCD/QUDA. The contraction uses the GPU kernels
 of cvc's `hlbl_mII_invert_contract`, copied to `kernels/`.
@@ -93,15 +94,15 @@ ctest --test-dir build --output-on-failure
 
 | test | checks |
 |---|---|
-| `test_schedule` | window sizes, pair counts, completeness, cache peaks; peak 16 for all 16 directions |
-| `compare_schedule` | C++ schedules (printed by the test program `schedule_dump`) = Python reference, also for multi-chain files (counts, totals, overlaps) and bad-file errors |
-| `test_input` | input parser: required keys, comments, every error |
+| `test_schedule` | window sizes, pair counts, completeness, cache peaks; peak 16 for all 16 directions; which solves get 2+2 |
+| `compare_schedule` | C++ schedules (printed by the test program `schedule_dump`) = Python reference, also for multi-chain files (counts, totals, overlaps), the 2+2 plan and warnings, and bad-file errors |
+| `test_input` | input parser: required keys, comments, `2p2` lines, every error |
 | `test_gamma`, `test_lattice` | gamma algebra; site indexing and ownership |
-| `test_contract_random` | contraction on random fields: finite, matches a stored value |
-| `test_driver_random` | schedule loop on random fields: pair count, cache peak, device vs host cache, two chains vs independent runs, HDF5 content |
+| `test_contract_random` | contraction and 2+2 pieces on random fields: finite, match stored values; index structure of P1 and P23 |
+| `test_driver_random` | schedule loop on random fields: pair count, cache peak, device vs host cache, two chains vs independent runs, 2+2 at first solves vs direct calls, HDF5 content |
 | `hypercube_random_fields` | whole program on `sanity_check/one_chain.input` (80 pairs) |
-| `hypercube_random_fields_multi` | whole program on `sanity_check/multi_chain.input` (2 chains, 225 pairs) |
-| `hypercube_dummy_run` | `--dummy-run` on the same file |
+| `hypercube_random_fields_multi` | whole program on `sanity_check/multi_chain.input` (2 chains, 225 pairs, 2+2 at 3 sources) |
+| `hypercube_dummy_run` | `--dummy-run` on the same file, with one 2+2 |
 
 `test_contract_random`, `test_driver_random` and `hypercube_*` need one GPU.
 `check_pair` (not in ctest) solves two real point sources and contracts their
@@ -129,7 +130,8 @@ once.
   `start + j·stride·dir`, with `steps = K − j`. It gives windows j+1..K
   exactly and repeats only window j's 15 inner pairs (reported by the overlap
   warning). Starting at window j+1 instead would miss the 50 pairs between
-  windows j and j+1.
+  windows j and j+1. Window j's sources are solved again: drop them from the
+  `2p2` lines, or their 2+2 is computed again (in the new result file).
 
 ### Checks
 
@@ -141,8 +143,10 @@ A production run checks only its input. Before submitting:
 - `--dummy-run` (on the job's resources): the full setup (gauge field, QUDA
   multigrid, QED kernel), every check, the memory estimate on the worst rank,
   then the memory peak for real: cache filled, one position solved (24
-  solves), one pair contracted. Writes no results; ends with `dummy run: all
-  checks passed` (status 0) or `FAILED` (status 1). `--tune` makes QUDA tune
+  solves), one pair contracted and, with `2p2` lines, the 2+2 of the largest
+  target list (`one 2+2 source (n targets) in t s`, a value for `--t-2p2`).
+  Writes no results; ends with `dummy run: all checks passed` (status 0) or
+  `FAILED` (status 1). `--tune` makes QUDA tune
   and save its tune cache to `QUDA_RESOURCE_PATH`, so a production run with
   the same build, node count and path starts tuned.
 
@@ -166,6 +170,7 @@ cache           = host
 out             = result.h5
 chain start=0,0,0,0   dir=1,1,1,1   stride=4 steps=30
 chain start=0,16,0,0  dir=1,1,1,1   stride=6
+2p2 source=4,4,4,4 targets=(8,8,8,8),(0,0,0,0)
 ```
 
 | key | meaning |
@@ -177,6 +182,7 @@ chain start=0,16,0,0  dir=1,1,1,1   stride=6
 | `timing` (optional) | timing log; default `out` with `.timing.csv` |
 | `random_fields` (optional) | `yes`: random numbers instead of solves |
 | `chain` | `start=t,x,y,z dir=±1,±1,±1,±1 stride=n [steps=K]`: first source, step direction, every pair at \|y\| = 2n, windows 0..K (default `auto`: as many as fit before sources wrap) |
+| `2p2` (optional) | `source=t,x,y,z targets=(t,x,y,z),(t,x,y,z),...`: the 2+2 pieces of `source` for every target, at its first solve (see 2+2). One line per source; sites in [0, L) |
 
 `scripts/input/hlbl.input.example` is a commented template.
 
@@ -197,6 +203,20 @@ Sources are in wrapped global coordinates, with the window of each chain that
 solves them. At most 20 pairs of chains are listed, each with its first 10
 shared sources.
 
+### 2+2
+
+A `2p2` line names a source and its targets. Right after the first solve of
+the source in the run (chains in input order, then windows, then solve
+order), `compute_2p2_gpu` computes from that block its P1 and, for every
+target, P2_0, P2_1 and P3; then the source's pairs are contracted as usual.
+Only flavour 0 is computed, as in cvc: the two-point function is the same for
+both. A site solved again, by another chain or by a chain that wraps, gets no
+second 2+2. The source must be solved by a chain; targets need no propagator.
+
+`--dummy-run` and the Python script warn about solved sites that are no 2+2
+source and about 2+2 sources that no chain solves (no 2+2 for them); the first
+10 of each are listed. A run prints how many 2+2 sources the chains solve.
+
 ### Memory
 
 One source position is 4608 B per local site (2 flavours × 12 × 24 doubles).
@@ -207,22 +227,27 @@ The cache holds at most 16, for every direction. 128×64³ on 8 nodes (32 GPUs,
 |---|---|---|
 | one position | 4608 B × local sites | 4.5 GiB |
 | host (`cache = host`) | 16 × 4.5 GiB + solver process (≈ 15 GiB) | ≈ 87 GiB |
-| device (`cache = host`) | QUDA 11.4 + kernel stack 10.4 + 3 × 4.5 | ≈ 35 GiB |
+| device (`cache = host`) | QUDA 11.4 + kernel stack 6.8 + 3 × 4.5 | ≈ 32 GiB |
 
-Measured: 83 GiB host (Slurm `MaxRSS`), 36–38 GiB per GPU (`nvidia-smi`). On
-4 nodes a position is 9 GiB and 16 do not fit in host memory.
+Measured before `b677727` (kernel stack then 10.4 GiB): 83 GiB host (Slurm
+`MaxRSS`), 36–38 GiB per GPU (`nvidia-smi`). On 4 nodes a position is 9 GiB
+and 16 do not fit in host memory.
 
-The kernel stack: the 4-point kernel uses 41,280 B of stack per thread (STACK
+The kernel stack: the 4-point kernel uses 27,112 B of stack per thread (STACK
 of `ker_4pt_contraction` in `cuobjdump --dump-resource-usage
-build/hlbl_hypercube`), and the CUDA driver reserves that for every thread
-slot (132 SMs × 2048) at the first launch. The Python script tabulates memory
-per node count from these numbers (`--kernel-stack-bytes`, `--solver-gb`,
-`--solver-host-gb`, ...).
+build/hlbl_hypercube`; 41,280 B before `b677727`), the 2+2 kernels
+(`kernel_p20`, `p21`, `p3`) 16,552 B. The CUDA driver reserves the largest
+stack of the kernels launched for every thread slot (132 SMs × 2048), so 2+2
+adds none: 6.8 GiB per GPU (6.64 GiB measured by `--dummy-run`). With 2+2 the
+GPU also holds the buffers of `compute_2p2_gpu`: Π, 128 B per local site
+(0.13 GiB at 32⁴), and P1, P23. The Python script tabulates memory per node
+count from these numbers (`--kernel-stack-bytes`, `--kernel-stack-bytes-2p2`,
+`--solver-gb`, `--solver-host-gb`, ...).
 
 ### Run time
 
 ```text
-time = setup + invert-y × n_propagators + kernel_sum × 2 × n_pairs
+time = setup + invert-y × n_propagators + kernel_sum × 2 × n_pairs + 2p2 × n_2p2
 ```
 
 At 8 nodes on 128×64³: setup ≈ 275 s (gauge read and multigrid, once per
@@ -230,28 +255,43 @@ job), invert-y ≈ 40.6 s (24 solves of one position), kernel_sum ≈ 2.8 s per
 flavour. K = 1 (31 propagators, 80 pairs) took about 2000 s. Each further
 window adds 15 × 40.6 s + 65 × 5.7 s ≈ 980 s, or 2.2 node-hours.
 
+2+2: about 52 s per source with 16 targets (cvc `time_2p2` at 8 nodes,
+`~/cvc_timing/cB/strong-2p2`), so a 2+2 at every new source adds about 780 s
+per window. Its P2/P3 kernels run one block per target and geometry, at one
+block per SM, so on a GH200 (132 SMs) up to 44 targets should cost about the
+same as 16 (not measured). `--t-2p2` of the Python script takes this time.
+
 ### Output
 
 One HDF5 file per run, written after every window, so a killed job keeps its
-finished windows.
+finished windows. The pairs are in the group `kernel_sum` (at the root in
+files from before 2+2), the 2+2 pieces, with `2p2` lines, in the group `2p2`.
 
 | dataset | shape | content |
 |---|---|---|
-| `x`, `y` | N × 4 int | the pair's sources (global sites, in [0, L)); `x` is the earlier one and the kernel origin |
-| `yv` | N × 4 int | y − x, minimum image in [−L/2, L/2); always (±n, ±n, ±n, ±n) |
-| `chain` | N int | chain index, in input order |
-| `window` | N int | window of that chain |
-| `kernel_sum` | N × 2 double | flavour 0, flavour 1 |
+| `kernel_sum/x`, `kernel_sum/y` | N × 4 int | the pair's sources (global sites, in [0, L)); `x` is the earlier one and the kernel origin |
+| `kernel_sum/yv` | N × 4 int | y − x, minimum image in [−L/2, L/2); always (±n, ±n, ±n, ±n) |
+| `kernel_sum/chain` | N int | chain index, in input order |
+| `kernel_sum/window` | N int | window of that chain |
+| `kernel_sum/kernel_sum` | N × 2 double | flavour 0, flavour 1 |
+| `2p2/w` | M × 4 int | 2+2 source, global site in [0, L) |
+| `2p2/chain`, `2p2/window` | M int | chain and window of its first solve |
+| `2p2/P1` | M × 4 × 4 × 4 × Lmax double | P1[ρ][σ][ν][ζ]: Π_σν(z) summed over the sites with (z − w)_ρ mod L_ρ = ζ; 0 for ζ ≥ L_ρ |
+| `2p2/pair_w`, `2p2/pair_y` | R × 4 int | source and target of each (source, target) row |
+| `2p2/pair_yv` | R × 4 int | pair_y − pair_w, minimum image in [−L/2, L/2) |
+| `2p2/P23` | R × 3 × 4 × 4 × 4 double | P2_0, P2_1, P3, each [ρ][σ][ν], only ρ < σ filled |
 | `chains` | C × 10 int | chains as run: start (4), dir (4), stride, steps (resolved) |
 
 Attributes: `lattice`, `procs`, `nconf`, `chains_columns`, `kernel`,
 `flavour_order`, `coordinate_ranges`, `muon_mass_MeV`, `lattice_spacing_fm`,
 `xunit`. With exactly
 one chain also `direction`, `origin` and `stride`, as in files from before
-chain lists.
+chain lists. The group `2p2` has `rows`, `P1_index`, `P23_index` and
+`flavour`.
 
-The timing log has one CSV row per solve and per kernel sum:
-`kind,chain,window,x0..x3,y0..y3,seconds,iterations`.
+The timing log has one CSV row per solve, per kernel sum and per 2+2 source:
+`kind,chain,window,x0..x3,y0..y3,seconds,iterations`. A 2+2 row (kind `2p2`)
+has its source as x.
 
 ## Running on Alps
 
@@ -305,12 +345,13 @@ production job.
   (31 propagators, 80 pairs), `cache = host`. 34 minutes, cache peak 16 as
   predicted, QUDA plaquette matches the file (0.554279822834), and a rerun
   gives the same kernel sums.
-- **Not done:** comparing the kernel sums with cvc's
+- 2+2 pieces: `compute_2p2_gpu` at the first solve of each `2p2` source,
+  tested on random fields.
+- **Not done:** comparing the kernel sums and the 2+2 pieces with cvc's
   `hlbl_mII_invert_contract`. Correctness against production is still open.
 
 ## Possible extensions
 
 - Keep each cached propagator on a random subset of sites (needs kernels that
   loop over a site list, and a check of the statistical error).
-- The 2+2 contribution: the kernels are compiled, but it needs ordered pairs.
 - Share propagators between overlapping chains; restart inside a window.

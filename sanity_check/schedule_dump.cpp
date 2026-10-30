@@ -8,7 +8,11 @@
 //   mode=<name> n_propagators=.. n_solves=.. n_pairs=.. n_kernel_sums=.. peak_cache=..
 //   edge (a,b,c,d) (e,f,g,h)      each pair of `window`, in units of the stride
 // then, with several chains, a "total ..." line (interleaved) and the overlap
-// report. Errors in the file go to stderr as "schedule_dump: error: ...".
+// report; then, with 2p2 lines, in run order
+//   2p2 chain=c window=k source=(..) targets=n   each 2+2 computed
+//   2p2 total sources=.. targets=..
+// and the 2+2 warnings. Errors in the file go to stderr as
+// "schedule_dump: error: ...".
 
 #include <algorithm>
 #include <cstdio>
@@ -106,6 +110,30 @@ int main(int argc, char** argv) {
                   n, total.n_propagators, total.n_solves, total.n_pairs,
                   total.n_kernel_sums, total.peak_cache);
       for (const std::string& line : overlap_report(schedules, *in.lattice)) {
+        std::printf("%s\n", line.c_str());
+      }
+    }
+    if (!in.sources_2p2.empty()) {
+      std::vector<Vec4> sources;
+      for (const Source2p2& g : in.sources_2p2) sources.push_back(g.source);
+      Plan2p2 const plan = plan_2p2(schedules, sources, *in.lattice);
+      long long n_sources = 0, n_targets = 0;
+      for (int c = 0; c < n; ++c) {
+        for (const Step& step : schedules[c]) {
+          for (const Source& src : step.sources) {
+            auto const it = plan.at[c].find(src.position);
+            if (it == plan.at[c].end()) continue;
+            const Source2p2& g = in.sources_2p2[it->second];
+            std::printf("2p2 chain=%d window=%d source=", c, step.index);
+            print_vec4(g.source);
+            std::printf(" targets=%zu\n", g.targets.size());
+            ++n_sources;
+            n_targets += static_cast<long long>(g.targets.size());
+          }
+        }
+      }
+      std::printf("2p2 total sources=%lld targets=%lld\n", n_sources, n_targets);
+      for (const std::string& line : report_2p2(plan, sources)) {
         std::printf("%s\n", line.c_str());
       }
     }

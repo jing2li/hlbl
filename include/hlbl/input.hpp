@@ -5,9 +5,11 @@
 //   # comment
 //   cache = host
 //   chain start=0,0,0,0 dir=1,1,1,1 stride=4 steps=30
+//   2p2 source=1,1,1,1 targets=(4,4,4,4),(9,9,9,9)
 //
-// Global lines are `key = value`, chain lines are `chain key=value ...`.
-// See scripts/input/hlbl.input.example for every key.
+// Global lines are `key = value`, chain lines are `chain key=value ...`, 2+2
+// lines `2p2 source=... targets=(...),(...)`. See
+// scripts/input/hlbl.input.example for every key.
 
 #include <istream>
 #include <optional>
@@ -27,9 +29,18 @@ struct Chain {
   int steps = -1;  // -1: as many as fit before sources wrap
 };
 
+// One 2+2 source: after the first solve of `source` in the run, the 2+2
+// pieces of every target. Global sites in [0, L).
+struct Source2p2 {
+  Vec4 source{};
+  std::vector<Vec4> targets;
+  int line = 0;  // line of the input file, for error messages
+};
+
 // Required keys are empty (or 0) when not given; see check_required().
 struct Input {
   std::vector<Chain> chains;
+  std::vector<Source2p2> sources_2p2;  // optional: `2p2` lines
   // A solver run checks lattice and procs against invert.input.
   std::optional<Vec4> lattice;     // global extents
   std::optional<Vec4> procs;       // process grid

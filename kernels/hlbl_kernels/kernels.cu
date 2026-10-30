@@ -560,24 +560,25 @@ unsigned const T_global, unsigned const LX_global, unsigned const LY_global, uns
                 // k=5: {2,3}
                 local_p2_1[2*16 + 3*4 + nu] += kerv2[5][nu][mu][lambda] * pix[mu*4+lambda];
             }
-        
+        }
 
-            #pragma unroll
-            for (int rho = 0; rho < 4; rho++)
-            for (int sigma = 0; sigma < 4; sigma++)
-            for (int nu = 0; nu < 4; nu++) {
-                int idx = rho * 16 + sigma * 4 + nu;
+        /* after the ix loop, as in kernel_p20 and kernel_p3: blockReduceSum
+         * syncs the block, so every thread must call it equally often */
+        #pragma unroll
+        for (int rho = 0; rho < 4; rho++)
+        for (int sigma = 0; sigma < 4; sigma++)
+        for (int nu = 0; nu < 4; nu++) {
+            int idx = rho * 16 + sigma * 4 + nu;
 
-                double sum_p2_1 = blockReduceSum(local_p2_1[idx]);
+            double sum_p2_1 = blockReduceSum(local_p2_1[idx]);
 
-                if (threadIdx.x == 0) {
-                    double *P23_y = P23 + n_y*kernel_n*64 + yi*kernel_n*64 + ikernel*64;
-                    P23_y[idx] = sum_p2_1;
-                }
-            } 
+            if (threadIdx.x == 0) {
+                double *P23_y = P23 + n_y*kernel_n*64 + yi*kernel_n*64 + ikernel*64;
+                P23_y[idx] = sum_p2_1;
+            }
         }
     }
-    
+
 }
 
 __global__ void /* __launch_bounds__(128,2) */ kernel_p3(double *pi, double *P23, int n_y, const int gsw[4], const int *gycoords, const double xunit[2],

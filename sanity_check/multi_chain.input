@@ -1,5 +1,5 @@
-# Two chains on random fields (ctest hypercube_random_fields_multi and
-# hypercube_dummy_run).
+# Two chains and 2p2 lines on random fields (ctest
+# hypercube_random_fields_multi and hypercube_dummy_run).
 random_fields   = yes
 lattice         = 6,6,6,6
 procs           = 1,1,1,1
@@ -12,3 +12,10 @@ lattice_spacing = 0.07957       # fm
 chain start=0,0,0,0 dir=1,1,1,1  stride=1 steps=1
 # windows 0 to 2: 15 + 65 + 65 = 145 pairs
 chain start=3,0,0,0 dir=1,-1,1,1 stride=1 steps=2
+
+# 2+2 at the first solve of three sources: the centres of windows 0 and 1 of
+# chain 0, and the start of chain 1; no chain solves (1,2,3,4), a warning
+2p2 source=0,0,0,0 targets=(3,3,3,3),(0,5,1,2)
+2p2 source=1,1,1,1 targets=(0,0,0,0)
+2p2 source=3,0,0,0 targets=(0,0,0,0),(1,1,1,1),(2,2,2,2)
+2p2 source=1,2,3,4 targets=(0,0,0,0)

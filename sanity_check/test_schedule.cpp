@@ -1,11 +1,14 @@
-// Window sizes, pair counts, completeness and cache peaks of the schedule.
-// scripts/compare_schedule.sh checks it against the Python reference.
+// Window sizes, pair counts, completeness and cache peaks of the schedule, and
+// which solves are followed by 2+2. scripts/compare_schedule.sh checks it
+// against the Python reference.
 
 #include "hlbl/schedule.hpp"
 
 #include <cstdio>
 #include <set>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "check.hpp"
 
@@ -126,6 +129,61 @@ int main() {
       auto steps = build_schedule(h, n, 6, Vec4{5, 0, 0, 0});
       check_complete(steps, n);
     }
+  }
+
+  // plan_2p2: the first solve of each 2+2 source in run order, sites wrapped.
+  {
+    Vec4 const L{6, 6, 6, 6}, h{1, 1, 1, 1};
+    std::vector<Schedule> const chains = {build_schedule(h, 1, 1, Vec4{0, 0, 0, 0}),
+                                          build_schedule(h, 1, 1, Vec4{1, 1, 1, 1})};
+    // (1,1,1,1): window 1 of chain 0 and window 0 of chain 1. (2,2,2,2): chain
+    // 1 only. (5,5,5,5): chain 0, as (-1,-1,-1,-1). (3,0,0,0): no chain.
+    std::vector<Vec4> const sources = {
+        {1, 1, 1, 1}, {2, 2, 2, 2}, {5, 5, 5, 5}, {3, 0, 0, 0}};
+    Plan2p2 const plan = plan_2p2(chains, sources, L);
+    HLBL_CHECK(plan.at.size() == 2);
+    HLBL_CHECK(plan.at[0].size() == 2 && plan.at[1].size() == 1);
+    HLBL_CHECK(plan.at[0].at(Vec4{1, 1, 1, 1}) == 0);
+    HLBL_CHECK(plan.at[0].at(Vec4{-1, -1, -1, -1}) == 2);  // keyed unwrapped
+    HLBL_CHECK(plan.at[1].at(Vec4{2, 2, 2, 2}) == 1);
+    HLBL_CHECK(plan.unsolved == std::vector<int>{3});
+
+    // every other solved site once, at its first solve
+    std::set<Vec4> sites;
+    for (const Schedule& steps : chains) {
+      for (const Vec4& p : all_positions(steps)) sites.insert(mod_pos(p, L));
+    }
+    HLBL_CHECK(plan.not_sources.size() == sites.size() - 3);
+    std::set<Vec4> listed;
+    for (const auto& [p, chain, window] : plan.not_sources) {
+      HLBL_CHECK(listed.insert(p).second);
+      HLBL_CHECK(p != (Vec4{1, 1, 1, 1}) && p != (Vec4{2, 2, 2, 2}) &&
+                 p != (Vec4{5, 5, 5, 5}));
+    }
+
+    // the warnings: 10 sites listed, then the rest counted
+    auto const lines = report_2p2(plan, sources);
+    std::string const n = std::to_string(plan.not_sources.size());
+    HLBL_CHECK(lines.size() == 14);
+    HLBL_CHECK(lines[0] == "WARNING: " + n +
+                               " solved source positions are not 2+2 sources (no 2+2 "
+                               "computed for them)");
+    HLBL_CHECK(lines[11] == "  ... and " +
+                                std::to_string(plan.not_sources.size() - 10) + " more");
+    HLBL_CHECK(lines[12] ==
+               "WARNING: 1 2+2 sources are not solved by any chain (no 2+2 computed "
+               "for them)");
+    HLBL_CHECK(lines[13] == "  (3,0,0,0)");
+    HLBL_CHECK(report_2p2(plan, {}).empty());  // no 2p2 lines: no warnings
+  }
+
+  // a chain that wraps onto its own sites: (4,4,4,4) of window 4 is (0,0,0,0)
+  // of window 0 again, and gets no second 2+2
+  {
+    Vec4 const L{4, 4, 4, 4}, h{1, 1, 1, 1};
+    Plan2p2 const plan = plan_2p2({build_schedule(h, 1, 6)}, {Vec4{0, 0, 0, 0}}, L);
+    HLBL_CHECK(plan.at[0].size() == 1 && plan.at[0].count(Vec4{0, 0, 0, 0}) == 1);
+    HLBL_CHECK(plan.unsolved.empty());
   }
 
   std::printf("test_schedule: all checks passed\n");

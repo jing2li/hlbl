@@ -281,4 +281,69 @@ std::vector<std::string> overlap_report(const std::vector<Schedule>& chains,
   return lines;
 }
 
+Plan2p2 plan_2p2(const std::vector<Schedule>& chains,
+                 const std::vector<Vec4>& sources, const Vec4& lattice) {
+  std::map<Vec4, int> index;  // wrapped 2+2 source -> its index
+  for (std::size_t i = 0; i < sources.size(); ++i) {
+    index.emplace(mod_pos(sources[i], lattice), static_cast<int>(i));
+  }
+  Plan2p2 plan;
+  plan.at.resize(chains.size());
+  std::set<Vec4> solved;  // wrapped sites solved so far
+  for (std::size_t c = 0; c < chains.size(); ++c) {
+    for (const Step& step : chains[c]) {
+      for (const Source& src : step.sources) {
+        Vec4 const p = mod_pos(src.position, lattice);
+        if (!solved.insert(p).second) continue;  // not the first solve
+        auto const it = index.find(p);
+        if (it != index.end()) {
+          plan.at[c].emplace(src.position, it->second);
+        } else {
+          plan.not_sources.emplace_back(p, static_cast<int>(c), step.index);
+        }
+      }
+    }
+  }
+  for (std::size_t i = 0; i < sources.size(); ++i) {
+    if (!solved.count(mod_pos(sources[i], lattice))) {
+      plan.unsolved.push_back(static_cast<int>(i));
+    }
+  }
+  return plan;
+}
+
+std::vector<std::string> report_2p2(const Plan2p2& plan,
+                                    const std::vector<Vec4>& sources) {
+  std::vector<std::string> lines;
+  if (sources.empty()) return lines;
+  char buf[256];
+  auto add = [&](auto... args) {
+    std::snprintf(buf, sizeof buf, args...);
+    lines.emplace_back(buf);
+  };
+  constexpr long kMaxSites = 10;  // sites listed per warning
+  long const n_not = static_cast<long>(plan.not_sources.size());
+  if (n_not > 0) {
+    add("WARNING: %ld solved source positions are not 2+2 sources (no 2+2 "
+        "computed for them)", n_not);
+    for (long i = 0; i < std::min(n_not, kMaxSites); ++i) {
+      const auto& [p, chain, window] = plan.not_sources[i];
+      add("  (%d,%d,%d,%d) in window %d of chain %d", p[0], p[1], p[2], p[3],
+          window, chain);
+    }
+    if (n_not > kMaxSites) add("  ... and %ld more", n_not - kMaxSites);
+  }
+  long const n_unsolved = static_cast<long>(plan.unsolved.size());
+  if (n_unsolved > 0) {
+    add("WARNING: %ld 2+2 sources are not solved by any chain (no 2+2 "
+        "computed for them)", n_unsolved);
+    for (long i = 0; i < std::min(n_unsolved, kMaxSites); ++i) {
+      const Vec4& p = sources[plan.unsolved[i]];
+      add("  (%d,%d,%d,%d)", p[0], p[1], p[2], p[3]);
+    }
+    if (n_unsolved > kMaxSites) add("  ... and %ld more", n_unsolved - kMaxSites);
+  }
+  return lines;
+}
+
 }  // namespace hlbl

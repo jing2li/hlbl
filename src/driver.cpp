@@ -5,22 +5,28 @@
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace hlbl {
 
 namespace {
 
 // One chain, using `cache`, which must be empty. Appends the results to
-// `results` and returns the chain's own statistics.
+// `results` (and the 2+2 results to `results_2p2` if not null) and returns
+// the chain's own statistics. `at_2p2`: the chain's solves followed by 2+2
+// (Plan2p2::at), position -> index into options.sources_2p2.
 RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
                    const Lattice& lattice, const RunOptions& options,
                    PropagatorProvider& provider, Contractor& contractor,
                    ResultWriter* writer, TimingLog* timing,
-                   PropagatorCache& cache, std::vector<PairResult>& results) {
+                   PropagatorCache& cache, std::vector<PairResult>& results,
+                   const std::map<Vec4, int>& at_2p2,
+                   std::vector<Result2p2>* results_2p2) {
   int const n_windows = static_cast<int>(schedule.size());
   Vec4 const global = lattice.global();
   auto wrap = [&](const Vec4& p) { return mod_pos(p, global); };
@@ -41,6 +47,30 @@ RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
     std::fflush(stdout);
   }
   double const chain_t0 = MPI_Wtime();
+  bool const with_2p2 = !options.sources_2p2.empty();
+  std::vector<Result2p2> rows_2p2;  // of the current window
+
+  // the 2+2 pieces of `site` from its block `d_fwd`
+  auto pieces_2p2 = [&](int window, const Vec4& site, const double* d_fwd,
+                        const Source2p2& source) {
+    double const t0 = MPI_Wtime();
+    Pieces2p2 pieces =
+        contractor.pieces_2p2(d_fwd, site, source.targets, options.xunit);
+    double const dt = MPI_Wtime() - t0;
+    Result2p2 r;
+    r.w = site;
+    r.chain = chain;
+    r.window = window;
+    r.p1 = std::move(pieces.p1);
+    r.y = source.targets;
+    for (const Vec4& y : source.targets) r.yv.push_back(lattice.site_map_diff(y, site));
+    r.p23 = std::move(pieces.p23);
+    rows_2p2.push_back(std::move(r));
+    local_stats.pieces_2p2++;
+    local_stats.targets_2p2 += static_cast<long long>(source.targets.size());
+    local_stats.seconds_2p2 += dt;
+    if (timing) timing->pieces_2p2(chain, window, site, dt);
+  };
 
   auto solve = [&](int window, const Vec4& position) {
     Vec4 const site = wrap(position);
@@ -48,11 +78,17 @@ RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
     double const t0 = MPI_Wtime();
     int const iterations = provider.compute(site, dest);
     double const dt = MPI_Wtime() - t0;
-    cache.end_insert(position);
     local_stats.positions_solved++;
     local_stats.iterations += iterations;
     local_stats.seconds_solve += dt;
     if (timing) timing->solve(chain, window, site, dt, iterations);
+    // 2+2 before the block is stored: `dest` is the solve target (the cache
+    // entry, or the host cache's scratch block), so no staging copy
+    auto const it = at_2p2.find(position);
+    if (it != at_2p2.end()) {
+      pieces_2p2(window, site, dest.get(), options.sources_2p2[it->second]);
+    }
+    cache.end_insert(position);
   };
 
   for (int k = 0; k < n_windows; ++k) {
@@ -89,13 +125,22 @@ RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
         cache.pair_done(q, src.position);
       }
     }
-    if (writer) writer->append(rows);
+    if (writer) {
+      writer->append(rows);
+      writer->append_2p2(rows_2p2);
+    }
     results.insert(results.end(), rows.begin(), rows.end());
     if (options.verbose && rank == 0) {
-      std::printf("# [hlbl] chain %d window %d: %zu pairs, cache %d (peak %d)\n",
-                  chain, k, rows.size(), cache.size(), cache.peak());
+      std::printf("# [hlbl] chain %d window %d: %zu pairs, ", chain, k, rows.size());
+      if (with_2p2) std::printf("2+2 at %zu sources, ", rows_2p2.size());
+      std::printf("cache %d (peak %d)\n", cache.size(), cache.peak());
       std::fflush(stdout);
     }
+    if (results_2p2) {
+      results_2p2->insert(results_2p2->end(), std::make_move_iterator(rows_2p2.begin()),
+                          std::make_move_iterator(rows_2p2.end()));
+    }
+    rows_2p2.clear();
   }
 
   if (cache.size() != 0) {
@@ -103,9 +148,10 @@ RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
   }
   local_stats.cache_peak = cache.peak();
   if (options.verbose && rank == 0) {
-    std::printf("# [hlbl] chain %d done: %d pairs, %d positions solved, %.1f s\n",
-                chain, local_stats.pairs, local_stats.positions_solved,
-                MPI_Wtime() - chain_t0);
+    std::printf("# [hlbl] chain %d done: %d pairs, %d positions solved, ", chain,
+                local_stats.pairs, local_stats.positions_solved);
+    if (with_2p2) std::printf("2+2 at %d sources, ", local_stats.pieces_2p2);
+    std::printf("%.1f s\n", MPI_Wtime() - chain_t0);
     std::fflush(stdout);
   }
   return local_stats;
@@ -119,25 +165,36 @@ std::vector<PairResult> run_chains(const Lattice& lattice,
                                     PropagatorProvider& provider,
                                     Contractor& contractor,
                                     ResultWriter* writer, TimingLog* timing,
-                                    RunStats* stats) {
+                                    RunStats* stats,
+                                    std::vector<Result2p2>* results_2p2) {
   if (chains.empty()) throw std::runtime_error("run_chains: no chains");
   if (!(options.xunit > 0)) {
     throw std::runtime_error("run_chains: RunOptions::xunit (m_mu a) is not set");
   }
   // one cache for all chains: its pinned and device buffers are reused
   PropagatorCache cache(options.residency, block_length(lattice));
+  // which solves are followed by 2+2: the first solve of each 2+2 source
+  std::vector<Vec4> sources;
+  for (const Source2p2& g : options.sources_2p2) sources.push_back(g.source);
+  Plan2p2 const plan = plan_2p2(chains, sources, lattice.global());
+  if (results_2p2) results_2p2->clear();
+
   RunStats total;
   std::vector<PairResult> results;
   int const n_chains = static_cast<int>(chains.size());
   for (int c = 0; c < n_chains; ++c) {
     RunStats s = run_chain(c, n_chains, chains[c], lattice, options, provider,
-                           contractor, writer, timing, cache, results);
+                           contractor, writer, timing, cache, results,
+                           plan.at[c], results_2p2);
     total.positions_solved += s.positions_solved;
     total.iterations += s.iterations;
     total.pairs += s.pairs;
     total.cache_peak = std::max(total.cache_peak, s.cache_peak);
     total.seconds_solve += s.seconds_solve;
     total.seconds_kernel_sum += s.seconds_kernel_sum;
+    total.pieces_2p2 += s.pieces_2p2;
+    total.targets_2p2 += s.targets_2p2;
+    total.seconds_2p2 += s.seconds_2p2;
   }
   if (stats) *stats = total;
   return results;
@@ -163,10 +220,20 @@ std::size_t node_memory_available() {
 }  // namespace
 
 MemoryEstimate estimate_memory(const Lattice& lattice, int peak_positions,
-                               PropagatorCache::Residency residency) {
+                               PropagatorCache::Residency residency,
+                               int max_targets_2p2) {
   MemoryEstimate e;
   e.bytes_per_position = block_length(lattice) * sizeof(double);
   e.peak_positions = peak_positions;
+  if (max_targets_2p2 > 0) {
+    // compute_2p2_gpu: Pi (16 doubles per site), P1 (64 Lmax), P23 (3 x 64
+    // per target) and the target list
+    const Vec4& g = lattice.global();
+    std::size_t const lmax = *std::max_element(g.begin(), g.end());
+    std::size_t const n = static_cast<std::size_t>(max_targets_2p2);
+    e.bytes_2p2 = (16 * lattice.volume() + 64 * lmax + 3 * 64 * n) * sizeof(double) +
+                  4 * n * sizeof(int);
+  }
 
   std::size_t free_dev = 0, total_dev = 0;
   check_cuda(cudaMemGetInfo(&free_dev, &total_dev), "cudaMemGetInfo");
@@ -187,6 +254,7 @@ MemoryEstimate estimate_memory(const Lattice& lattice, int peak_positions,
     e.device_needed = 3 * e.bytes_per_position;
     e.host_needed = e.peak_positions * e.bytes_per_position;
   }
+  e.device_needed += e.bytes_2p2;
   return e;
 }
 
