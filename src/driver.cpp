@@ -41,7 +41,7 @@ RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
   RunStats local_stats;
   int rank = 0;
   MPI_Comm_rank(lattice.cart_comm(), &rank);
-  if (options.verbose && rank == 0) {
+  if (rank == 0) {
     std::printf("# [hlbl] chain %d of %d: %d windows\n", chain, n_chains,
                 n_windows);
     std::fflush(stdout);
@@ -49,6 +49,10 @@ RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
   double const chain_t0 = MPI_Wtime();
   bool const with_2p2 = !options.sources_2p2.empty();
   std::vector<Result2p2> rows_2p2;  // of the current window
+  auto progress = [&](int w, const Vec4& p, const std::string& s) {  // stderr: unbuffered
+    if (rank == 0) std::fprintf(stderr, "# [hlbl] chain %d window %d "
+        "at (%d,%d,%d,%d): %s\n", chain, w, p[0], p[1], p[2], p[3], s.c_str());
+  };
 
   // the 2+2 pieces of `site` from its block `d_fwd`
   auto pieces_2p2 = [&](int window, const Vec4& site, const double* d_fwd,
@@ -70,6 +74,7 @@ RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
     local_stats.targets_2p2 += static_cast<long long>(source.targets.size());
     local_stats.seconds_2p2 += dt;
     if (timing) timing->pieces_2p2(chain, window, site, dt);
+    progress(window, site, "2+2 done, " + std::to_string(source.targets.size()) + " targets");
   };
 
   auto solve = [&](int window, const Vec4& position) {
@@ -82,6 +87,7 @@ RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
     local_stats.iterations += iterations;
     local_stats.seconds_solve += dt;
     if (timing) timing->solve(chain, window, site, dt, iterations);
+    progress(window, site, "inversion done");
     // 2+2 before the block is stored: `dest` is the solve target (the cache
     // entry, or the host cache's scratch block), so no staging copy
     auto const it = at_2p2.find(position);
@@ -124,13 +130,14 @@ RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
 
         cache.pair_done(q, src.position);
       }
+      progress(k, gy, "4pt done, " + std::to_string(src.partners.size()) + " pairs");
     }
     if (writer) {
       writer->append(rows);
       writer->append_2p2(rows_2p2);
     }
     results.insert(results.end(), rows.begin(), rows.end());
-    if (options.verbose && rank == 0) {
+    if (rank == 0) {
       std::printf("# [hlbl] chain %d window %d: %zu pairs, ", chain, k, rows.size());
       if (with_2p2) std::printf("2+2 at %zu sources, ", rows_2p2.size());
       std::printf("cache %d (peak %d)\n", cache.size(), cache.peak());
@@ -147,7 +154,7 @@ RunStats run_chain(int chain, int n_chains, const Schedule& schedule,
     throw std::logic_error("run_chains: propagators left in the cache");
   }
   local_stats.cache_peak = cache.peak();
-  if (options.verbose && rank == 0) {
+  if (rank == 0) {
     std::printf("# [hlbl] chain %d done: %d pairs, %d positions solved, ", chain,
                 local_stats.pairs, local_stats.positions_solved);
     if (with_2p2) std::printf("2+2 at %d sources, ", local_stats.pieces_2p2);

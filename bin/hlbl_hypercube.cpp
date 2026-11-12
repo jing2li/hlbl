@@ -198,7 +198,6 @@ void run(const Options& o, const hlbl::Lattice& lattice, int nconf,
   hlbl::RunOptions ro;
   ro.residency = residency(in);
   ro.xunit = xunit;
-  ro.verbose = true;
   ro.sources_2p2 = in.sources_2p2;
   hlbl::RunStats stats;
   double const t0 = MPI_Wtime();

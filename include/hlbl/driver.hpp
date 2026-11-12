@@ -19,7 +19,6 @@ namespace hlbl {
 struct RunOptions {
   PropagatorCache::Residency residency = PropagatorCache::Residency::kDevice;
   double xunit = 0;      // m_mu a (hlbl::xunit()); required
-  bool verbose = false;  // print one line per chain and window on rank 0
   // the 2p2 lines of the input file; empty: no 2+2
   std::vector<Source2p2> sources_2p2;
 };
@@ -42,7 +41,9 @@ struct RunStats {
 // gets each window's rows when it is done. `stats` are totals, with cache_peak
 // the largest. With options.sources_2p2, the first solve of each 2+2 source
 // (plan_2p2) is followed by its 2+2 pieces, before the pairs; they go to the
-// writer with the window's pairs and, if not null, to `results_2p2`.
+// writer with the window's pairs and, if not null, to `results_2p2`. Rank 0
+// prints progress: each chain and window to stdout, and each solve, 2+2 and
+// source's pairs to stderr.
 std::vector<PairResult> run_chains(const Lattice& lattice,
                                     const std::vector<Schedule>& chains,
                                     const RunOptions& options,
