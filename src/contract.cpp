@@ -122,7 +122,7 @@ Pieces2p2 Contractor::pieces_2p2(const double* d_fwd, const Vec4& gsw,
   int const lmax = *std::max_element(g.begin(), g.end());
   int const n_y = static_cast<int>(targets.size());
   std::size_t const n_p1 = 4 * 4 * 4 * static_cast<std::size_t>(lmax);
-  std::size_t const n_p23 = static_cast<std::size_t>(n_y) * kGeom2p2 * 64;
+  std::size_t const n_p23 = static_cast<std::size_t>(n_y) * 2 * kGeom2p2 * 64;
   if (h_p1_.size() < n_p1) h_p1_ = PinnedBuffer<double>(n_p1);
   if (h_p23_.size() < n_p23) h_p23_ = PinnedBuffer<double>(n_p23);
 
@@ -144,12 +144,12 @@ Pieces2p2 Contractor::pieces_2p2(const double* d_fwd, const Vec4& gsw,
 
   Pieces2p2 out;
   out.p1.assign(h_p1_.data(), h_p1_.data() + n_p1);
-  // compute_2p2_gpu gives [geometry][target][64]; one row per target here
+  // compute_2p2_gpu gives [2][geometry][target][64]; one row per target here
   out.p23.resize(n_p23);
   for (int y = 0; y < n_y; ++y) {
-    for (int geom = 0; geom < kGeom2p2; ++geom) {
+    for (int geom = 0; geom < 2 * kGeom2p2; ++geom) {
       std::copy_n(h_p23_.data() + (static_cast<std::size_t>(geom) * n_y + y) * 64, 64,
-                  out.p23.data() + (static_cast<std::size_t>(y) * kGeom2p2 + geom) * 64);
+                  out.p23.data() + (static_cast<std::size_t>(y) * 2 * kGeom2p2 + geom) * 64);
     }
   }
   return out;
@@ -184,7 +184,7 @@ std::size_t Contractor::reserve_kernel_memory(bool with_2p2) {
       DeviceBuffer<int> d_zeros(4);
       d_zeros.copy_from_host(zeros, 4);
       d_xunit_.copy_from_host(xunit_pair, 2);
-      PinnedBuffer<double> p1(4 * 4 * 4 * 2), p23(kGeom2p2 * 64);
+      PinnedBuffer<double> p1(4 * 4 * 4 * 2), p23(2 * kGeom2p2 * 64);
       compute_2p2_gpu(block.get(), p1.data(), p23.data(), 0, d_zeros.get(), target,
                       1, d_xunit_.get(), kqed_t_, 16, d_zeros.get(), MPI_COMM_SELF,
                       2, 2, 2, 2, 2, 2, 2, 2);

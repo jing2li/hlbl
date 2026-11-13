@@ -43,13 +43,14 @@ Both kernel files evaluate a single QED kernel, LΛ with Λ = 0.4
 | 2026-10-23 | `b677727` | `hlbl_kernels/kernels.cu` | The same rule: `site_map` for the QED kernel arguments of `kernel_4pt` (x − y, and y mapped in the kernel) and `kernel_p20`/`p21`/`p3` (cvc: zerohalf); `site_map_zerohalf` only for x_ρ. Removed `kernel_p23` (never launched), the `HAVE_KQED_V2` path (`KQED_LX_INIT`/`QUERY`, `kernel_p2{0,1}_mt`, `kernel_p3_mt` and their launch branch) and a dead commented block in `kernel_p3`. |
 | 2026-10-23 | `b677727` | `hlbl_kernels/kernels.cuh` | `kernel_p23` declaration removed. |
 | 2026-10-30 | (uncommitted) | `hlbl_kernels/kernels.cu` | `kernel_p21`: the block reduction and the P23 write moved after the `ix` loop, as in `kernel_p20` and `kernel_p3`. Inside the loop, threads with one iteration fewer (local volume not a multiple of the 256 threads of a block) skipped the `__syncthreads` of `blockReduceSum`: undefined behaviour and stale shared memory in the sum. Local volumes that are multiples of 256 give the same values as before. |
+| 2026-11-13 | (uncommitted) | `hlbl_kernels/kernels.cu` | P23 computed twice, to compare with the earlier cvc runs: `kernel_p20_zh`, `kernel_p21_zh`, `kernel_p3_zh` are `kernel_p20`/`p21`/`p3` with `site_map_zerohalf` for every QED kernel argument (`p20_zh`, `p21_zh` as cvc at `90da285`, `p21_zh` with the reduction fix above; `p3_zh` takes x − y unwrapped, zh(x) + zh(−y), where cvc wrapped x − y before zerohalf). `compute_2p2_gpu` fills P23 as `[2][geometry][y][kernel][64]`, minimum image then zerohalf: one stream, copy and `MPI_Iallreduce` per (copy, geometry) block. The caller's P23 is twice as long. |
 
 sha256 now:
 
 | file | sha256 |
 |---|---|
 | `cuda_lattice.cu` | `71296ebee84003ffffa54f798b0373dc6c2bc613fd66f95234dcf4cc51253911` |
-| `hlbl_kernels/kernels.cu` | `378558487d7de7fb9d9e93b7cec0d3c8afc229d68a849064ed14c7d47824dc29` |
+| `hlbl_kernels/kernels.cu` | `f64b0d9e2434e1b62e118dfb6ba78a78ef52afce563736007dd29119ad97ca03` |
 | `hlbl_kernels/kernels.cuh` | `c3d5dbec2c70530db6a90de7bec6d46ac7335c611707d2b2c5fcf8364610b66e` |
 
 The other files are as copied.

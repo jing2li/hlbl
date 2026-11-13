@@ -794,11 +794,12 @@ def memory_report(stats_by_mode, lattice, procs, precision, sparsen,
 
     def buffers_2p2(ranks):
         """compute_2p2_gpu's device buffers per rank, bytes: Pi (16 doubles per
-        local site, not sparsened), P1, P23 and the targets. 0 without 2+2."""
+        local site, not sparsened), P1, P23 (6 x 64 doubles per target: minimum
+        image and zerohalf) and the targets. 0 without 2+2."""
         if not max_targets_2p2:
             return 0.0
         n = max_targets_2p2
-        return (16 * volume / ranks + 64 * lmax + 3 * 64 * n) * 8 + 16 * n
+        return (16 * volume / ranks + 64 * lmax + 6 * 64 * n) * 8 + 16 * n
 
     def fit(cache, block, res):
         """GPU: cache + res on the device. host: cache in pinned host memory

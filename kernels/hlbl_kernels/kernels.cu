@@ -489,6 +489,97 @@ unsigned const T_global, unsigned const LX_global, unsigned const LY_global, uns
     
 }
 
+__global__ void /* __launch_bounds__(128,2) */ kernel_p20_zh(double *pi, double *P23, int n_y, const int gsw[4], const int *gycoords, const double xunit[2],
+QED_kernel_temps kqed_t, unsigned const VOLUME, const int g_proc_coords[4], unsigned const T, unsigned const LX, unsigned const LY, unsigned const LZ, 
+unsigned const T_global, unsigned const LX_global, unsigned const LY_global, unsigned const LZ_global){
+
+    for ( int yi = blockIdx.x; yi < n_y; yi+=gridDim.x){
+        // For P2: y = (gsy - gsw)
+        // For P3: y' = (gsw - gsy)
+        // We define y = (gsy - gsw) and use -y as input for P3.
+        int const * gsy = &gycoords[4*yi];
+        int const y[4] = {
+            ( gsy[0] - gsw[0] + static_cast<int>(T_global) ) % static_cast<int>(T_global),
+            ( gsy[1] - gsw[1] + static_cast<int>(LX_global) ) % static_cast<int>(LX_global),
+            ( gsy[2] - gsw[2] + static_cast<int>(LY_global) ) % static_cast<int>(LY_global),
+            ( gsy[3] - gsw[3] + static_cast<int>(LZ_global) ) % static_cast<int>(LZ_global)
+        };
+        int yv[4];
+        site_map_zerohalf ( yv, y, T_global, LX_global, LY_global, LZ_global );
+        double const ym[4] = {yv[0] * xunit[0], yv[1] * xunit[0], yv[2] * xunit[0], yv[3] * xunit[0] };
+        
+        // parallelise over ikernel
+        int const ikernel = blockIdx.y;
+
+        double local_p2_0[64]={0};
+        
+        //for (int sweep = 0; sweep < (VOLUME + blockDim.x -1) / blockDim.x; sweep++){
+        for (int ix = threadIdx.x; ix<VOLUME; ix +=blockDim.x){
+            //int const ix = sweep * blockDim.x + threadIdx.x;
+            /* a different local copy of P2/3 for each kernel */
+            //if (ix >= VOLUME) continue;
+            const double pix[16] = {pi[ix*16 +0], pi[ix*16 +1], pi[ix*16 +2], pi[ix*16 +3],
+                            pi[ix*16 +4], pi[ix*16 +5], pi[ix*16 +6], pi[ix*16 +7],
+                            pi[ix*16 +8], pi[ix*16 +9], pi[ix*16 +10],pi[ix*16 +11],
+                            pi[ix*16 +12],pi[ix*16 +13],pi[ix*16 +14],pi[ix*16 +15]};
+
+            int const x[4] = {
+            (ix / (static_cast<int>(LX) * static_cast<int>(LY) * static_cast<int>(LZ)) - gsw[0] + g_proc_coords[0] * static_cast<int>(T) + static_cast<int>(T_global)) % static_cast<int>(T_global),
+            (ix / (static_cast<int>(LY) * static_cast<int>(LZ)) % static_cast<int>(LX) - gsw[1] + g_proc_coords[1] * static_cast<int>(LX) + static_cast<int>(LX_global)) % static_cast<int>(LX_global),
+            ((ix / static_cast<int>(LZ)) % static_cast<int>(LY) - gsw[2]  + g_proc_coords[2] * static_cast<int>(LY) + static_cast<int>(LY_global)) % static_cast<int>(LY_global),
+            (ix % static_cast<int>(LZ) - gsw[3] + g_proc_coords[3] * static_cast<int>(LZ) + static_cast<int>(LZ_global)) % static_cast<int>(LZ_global)};
+
+            int xv[4];
+            site_map_zerohalf ( xv, x, T_global, LX_global, LY_global, LZ_global );
+            double const xm[4] = {xv[0] * xunit[0], xv[1] * xunit[0], xv[2] * xunit[0], xv[3] * xunit[0] };
+
+            double kerv1[6][4][4][4] KQED_ALIGN ;
+            KQED_LX(ikernel, xm, ym, kqed_t, kerv1);
+            /* unroll k (too much register pressure)*/
+            #pragma unroll
+            for (int mu=0; mu<4; mu++)
+            for (int nu=0; nu<4; nu++)
+            for (int lambda=0; lambda<4; lambda++){
+                // k=0: {0,1}
+                local_p2_0[0*16 + 1*4 + nu] += kerv1[0][mu][nu][lambda] * pix[mu*4 +lambda];
+                        
+                // k=1: {0,2}
+                local_p2_0[0*16 + 2*4 + nu] += kerv1[1][mu][nu][lambda] * pix[mu*4 +lambda];
+                            
+                // k=2: {0,3}
+                local_p2_0[0*16 + 3*4 + nu] += kerv1[2][mu][nu][lambda] * pix[mu*4 +lambda];
+                
+                // k=3: {1,2}
+                local_p2_0[1*16 + 2*4 + nu] += kerv1[3][mu][nu][lambda] * pix[mu*4 +lambda];
+                                
+                // k=4: {1,3}
+                local_p2_0[1*16 + 3*4 + nu] += kerv1[4][mu][nu][lambda] * pix[mu*4 +lambda];
+                
+                // k=5: {2,3}
+                local_p2_0[2*16 + 3*4 + nu] += kerv1[5][mu][nu][lambda] * pix[mu*4 +lambda];
+            
+            }
+        }
+        
+        
+
+        #pragma unroll
+        for (int rho = 0; rho < 4; rho++)
+        for (int sigma = 0; sigma < 4; sigma++)
+        for (int nu = 0; nu < 4; nu++) {
+            int idx = rho * 16 + sigma * 4 + nu;
+
+            double sum_p2_0 = blockReduceSum(local_p2_0[idx]);
+
+            if (threadIdx.x == 0) {
+                double *P23_y = P23 + 0*n_y*kernel_n*64 + yi*kernel_n*64 + ikernel*64;
+                P23_y[idx] = sum_p2_0;
+            }
+        } 
+    }
+    
+}
+
 __global__ void /* __launch_bounds__(128,2) */ kernel_p21(double *pi, double *P23, int n_y, const int gsw[4], const int *gycoords, const double xunit[2],
 QED_kernel_temps kqed_t, unsigned const VOLUME, const int g_proc_coords[4], unsigned const T, unsigned const LX, unsigned const LY, unsigned const LZ, 
 unsigned const T_global, unsigned const LX_global, unsigned const LY_global, unsigned const LZ_global){
@@ -533,6 +624,98 @@ unsigned const T_global, unsigned const LX_global, unsigned const LY_global, uns
 
             int xv[4];
             site_map ( xv, x, T_global, LX_global, LY_global, LZ_global );
+
+            double const xm[4] = {xv[0] * xunit[0], xv[1] * xunit[0], xv[2] * xunit[0], xv[3] * xunit[0] };
+            
+            double kerv2[6][4][4][4] KQED_ALIGN ;
+            KQED_LX(ikernel, ym, xm, kqed_t, kerv2);
+            #pragma unroll
+            for (int mu=0; mu<4; mu++)
+            for (int nu=0; nu<4; nu++)
+            for (int lambda=0; lambda<4; lambda++){
+                // k=0: {0,1}
+                local_p2_1[0*16 + 1*4 + nu] += kerv2[0][nu][mu][lambda] * pix[mu*4+lambda];
+            
+                // k=1: {0,2}
+                local_p2_1[0*16 + 2*4 + nu] += kerv2[1][nu][mu][lambda] * pix[mu*4+lambda];
+            
+                // k=2: {0,3}
+                local_p2_1[0*16 + 3*4 + nu] += kerv2[2][nu][mu][lambda] * pix[mu*4+lambda];
+ 
+                // k=3: {1,2}
+                local_p2_1[1*16 + 2*4 + nu] += kerv2[3][nu][mu][lambda] * pix[mu*4+lambda];
+
+                // k=4: {1,3}
+                local_p2_1[1*16 + 3*4 + nu] += kerv2[4][nu][mu][lambda] * pix[mu*4+lambda];
+            
+                // k=5: {2,3}
+                local_p2_1[2*16 + 3*4 + nu] += kerv2[5][nu][mu][lambda] * pix[mu*4+lambda];
+            }
+        }
+
+        /* after the ix loop, as in kernel_p20 and kernel_p3: blockReduceSum
+         * syncs the block, so every thread must call it equally often */
+        #pragma unroll
+        for (int rho = 0; rho < 4; rho++)
+        for (int sigma = 0; sigma < 4; sigma++)
+        for (int nu = 0; nu < 4; nu++) {
+            int idx = rho * 16 + sigma * 4 + nu;
+
+            double sum_p2_1 = blockReduceSum(local_p2_1[idx]);
+
+            if (threadIdx.x == 0) {
+                double *P23_y = P23 + n_y*kernel_n*64 + yi*kernel_n*64 + ikernel*64;
+                P23_y[idx] = sum_p2_1;
+            }
+        }
+    }
+
+}
+
+__global__ void /* __launch_bounds__(128,2) */ kernel_p21_zh(double *pi, double *P23, int n_y, const int gsw[4], const int *gycoords, const double xunit[2],
+QED_kernel_temps kqed_t, unsigned const VOLUME, const int g_proc_coords[4], unsigned const T, unsigned const LX, unsigned const LY, unsigned const LZ, 
+unsigned const T_global, unsigned const LX_global, unsigned const LY_global, unsigned const LZ_global){
+    //set_zero(P23, n_p23);
+    
+    for ( int yi = blockIdx.x; yi < n_y; yi+=gridDim.x){
+        // For P2: y = (gsy - gsw)
+        // For P3: y' = (gsw - gsy)
+        // We define y = (gsy - gsw) and use -y as input for P3.
+        int const * gsy = &gycoords[4*yi];
+        int const y[4] = {
+            ( gsy[0] - gsw[0] + static_cast<int>(T_global) ) % static_cast<int>(T_global),
+            ( gsy[1] - gsw[1] + static_cast<int>(LX_global) ) % static_cast<int>(LX_global),
+            ( gsy[2] - gsw[2] + static_cast<int>(LY_global) ) % static_cast<int>(LY_global),
+            ( gsy[3] - gsw[3] + static_cast<int>(LZ_global) ) % static_cast<int>(LZ_global)
+        };
+        int yv[4];
+        site_map_zerohalf ( yv, y, T_global, LX_global, LY_global, LZ_global );
+
+        double const ym[4] = {yv[0] * xunit[0], yv[1] * xunit[0], yv[2] * xunit[0], yv[3] * xunit[0] };
+        
+        // parallelise over ikernel
+        int ikernel = blockIdx.y;
+
+        double local_p2_1[64]={0};
+
+        //for (int sweep = 0; sweep < (VOLUME + blockDim.x -1) / blockDim.x; sweep++){
+        for (int ix = threadIdx.x; ix<VOLUME; ix +=blockDim.x){
+            //int const ix = sweep * blockDim.x + threadIdx.x;
+            /* a different local copy of P2/3 for each kernel */
+            //if (ix >= VOLUME) continue;
+            const double pix[16] = {pi[ix*16 +0], pi[ix*16 +1], pi[ix*16 +2], pi[ix*16 +3],
+                            pi[ix*16 +4], pi[ix*16 +5], pi[ix*16 +6], pi[ix*16 +7],
+                            pi[ix*16 +8], pi[ix*16 +9], pi[ix*16 +10],pi[ix*16 +11],
+                            pi[ix*16 +12],pi[ix*16 +13],pi[ix*16 +14],pi[ix*16 +15]};
+
+            int const x[4] = {
+            (ix / (static_cast<int>(LX) * static_cast<int>(LY) * static_cast<int>(LZ)) - gsw[0] + g_proc_coords[0] * static_cast<int>(T) + static_cast<int>(T_global)) % static_cast<int>(T_global),
+            (ix / (static_cast<int>(LY) * static_cast<int>(LZ)) % static_cast<int>(LX) - gsw[1] + g_proc_coords[1] * static_cast<int>(LX) + static_cast<int>(LX_global)) % static_cast<int>(LX_global),
+            ((ix / static_cast<int>(LZ)) % static_cast<int>(LY) - gsw[2]  + g_proc_coords[2] * static_cast<int>(LY) + static_cast<int>(LY_global)) % static_cast<int>(LY_global),
+            (ix % static_cast<int>(LZ) - gsw[3] + g_proc_coords[3] * static_cast<int>(LZ) + static_cast<int>(LZ_global)) % static_cast<int>(LZ_global)};
+
+            int xv[4];
+            site_map_zerohalf ( xv, x, T_global, LX_global, LY_global, LZ_global );
 
             double const xm[4] = {xv[0] * xunit[0], xv[1] * xunit[0], xv[2] * xunit[0], xv[3] * xunit[0] };
             
@@ -684,6 +867,106 @@ unsigned const T_global, unsigned const LX_global, unsigned const LY_global, uns
     
 }
 
+__global__ void /* __launch_bounds__(128,2) */ kernel_p3_zh(double *pi, double *P23, int n_y, const int gsw[4], const int *gycoords, const double xunit[2],
+QED_kernel_temps kqed_t, unsigned const VOLUME, const int g_proc_coords[4], unsigned const T, unsigned const LX, unsigned const LY, unsigned const LZ, 
+unsigned const T_global, unsigned const LX_global, unsigned const LY_global, unsigned const LZ_global){
+    //set_zero(P23, n_p23);
+    
+    for ( int yi = blockIdx.x; yi < n_y; yi+=gridDim.x){
+        // For P2: y = (gsy - gsw)
+        // For P3: y' = (gsw - gsy)
+        // We define y = (gsy - gsw) and use -y as input for P3.
+        int const * gsy = &gycoords[4*yi];
+        int const y[4] = {
+            ( gsy[0] - gsw[0] + static_cast<int>(T_global) ) % static_cast<int>(T_global),
+            ( gsy[1] - gsw[1] + static_cast<int>(LX_global) ) % static_cast<int>(LX_global),
+            ( gsy[2] - gsw[2] + static_cast<int>(LY_global) ) % static_cast<int>(LY_global),
+            ( gsy[3] - gsw[3] + static_cast<int>(LZ_global) ) % static_cast<int>(LZ_global)
+        };
+        // -y = gsw - gsy mapped on its own, not -yv: -(-L/2) would leave [-L/2, L/2)
+        int const y_minus[4] = {
+            ( static_cast<int>(T_global) - y[0] ) % static_cast<int>(T_global),
+            ( static_cast<int>(LX_global) - y[1] ) % static_cast<int>(LX_global),
+            ( static_cast<int>(LY_global) - y[2] ) % static_cast<int>(LY_global),
+            ( static_cast<int>(LZ_global) - y[3] ) % static_cast<int>(LZ_global)
+        };
+        int yv_minus[4];
+        site_map_zerohalf ( yv_minus, y_minus, T_global, LX_global, LY_global, LZ_global );
+
+        double const ym_minus[4] = { yv_minus[0] * xunit[0], yv_minus[1] * xunit[0], yv_minus[2] * xunit[0], yv_minus[3] * xunit[0] };
+        
+        // parallelise over ikernel
+        int ikernel = blockIdx.y;
+
+        double local_p3[64]={0};
+
+        //for (int sweep = 0; sweep < (VOLUME + blockDim.x -1) / blockDim.x; sweep++){
+        for (int ix = threadIdx.x; ix<VOLUME; ix +=blockDim.x){
+            //int const ix = sweep * blockDim.x + threadIdx.x;
+            /* a different local copy of P2/3 for each kernel */
+            //if (ix >= VOLUME) continue;
+            const double pix[16] = {pi[ix*16 +0], pi[ix*16 +1], pi[ix*16 +2], pi[ix*16 +3],
+                            pi[ix*16 +4], pi[ix*16 +5], pi[ix*16 +6], pi[ix*16 +7],
+                            pi[ix*16 +8], pi[ix*16 +9], pi[ix*16 +10],pi[ix*16 +11],
+                            pi[ix*16 +12],pi[ix*16 +13],pi[ix*16 +14],pi[ix*16 +15]};
+
+            int const x[4] = {
+            (ix / (static_cast<int>(LX) * static_cast<int>(LY) * static_cast<int>(LZ)) - gsw[0] + g_proc_coords[0] * static_cast<int>(T) + static_cast<int>(T_global)) % static_cast<int>(T_global),
+            (ix / (static_cast<int>(LY) * static_cast<int>(LZ)) % static_cast<int>(LX) - gsw[1] + g_proc_coords[1] * static_cast<int>(LX) + static_cast<int>(LX_global)) % static_cast<int>(LX_global),
+            ((ix / static_cast<int>(LZ)) % static_cast<int>(LY) - gsw[2]  + g_proc_coords[2] * static_cast<int>(LY) + static_cast<int>(LY_global)) % static_cast<int>(LY_global),
+            (ix % static_cast<int>(LZ) - gsw[3] + g_proc_coords[3] * static_cast<int>(LZ) + static_cast<int>(LZ_global)) % static_cast<int>(LZ_global)};
+
+            // non-wrapped
+            int xv[4];
+            site_map_zerohalf(xv, x, T_global, LX_global, LY_global, LZ_global);
+            int const xmyv[4] = {xv[0] + yv_minus[0], xv[1] + yv_minus[1], xv[2] + yv_minus[2], xv[3] + yv_minus[3]};
+            double xm_mi_ym[4] = {xmyv[0] * xunit[0], xmyv[1] * xunit[0], xmyv[2] * xunit[0], xmyv[3] * xunit[0]};
+
+
+            double kerv3[6][4][4][4] KQED_ALIGN ;
+            KQED_LX(ikernel, xm_mi_ym, ym_minus, kqed_t, kerv3);
+            #pragma unroll
+            for (int mu=0; mu<4; mu++)
+            for (int lambda=0; lambda<4; lambda++)
+            for (int nu=0; nu<4; nu++){
+                // k=0: {0,1}
+                local_p3[0*16 + 1*4 + nu] += kerv3[0][mu][lambda][nu] * pix[mu*4+lambda];
+            
+                // k=1: {0,2}
+                local_p3[0*16 + 2*4 + nu] += kerv3[1][mu][lambda][nu] * pix[mu*4+lambda];
+            
+                // k=2: {0,3}
+                local_p3[0*16 + 3*4 + nu] += kerv3[2][mu][lambda][nu] * pix[mu*4+lambda];
+            
+                // k=3: {1,2}
+                local_p3[1*16 + 2*4 + nu] += kerv3[3][mu][lambda][nu] * pix[mu*4+lambda];
+            
+                // k=4: {1,3}
+                local_p3[1*16 + 3*4 + nu] += kerv3[4][mu][lambda][nu] * pix[mu*4+lambda];
+            
+                // k=5: {2,3}
+                local_p3[2*16 + 3*4 + nu] += kerv3[5][mu][lambda][nu] * pix[mu*4+lambda];
+            }
+        }
+
+        #pragma unroll
+        for (int rho = 0; rho < 4; rho++)
+        for (int sigma = 0; sigma < 4; sigma++)
+        for (int nu = 0; nu < 4; nu++) {
+            int idx = rho * 16 + sigma * 4 + nu;
+
+            double sum_p3 = blockReduceSum(local_p3[idx]);
+
+            if (threadIdx.x == 0) {
+                double *P23_y = P23 + 2*n_y*kernel_n*64 + yi*kernel_n*64 + ikernel*64;
+                P23_y[idx] = sum_p3;
+            }
+        } 
+    }
+    
+}
+
+
 __host__ void compute_2p2_gpu(double *fwd_y, double *P1, double *P23, int iflavor, 
      int const gsw[4], const int *gycoords, int const n_y, const double xunit[2], 
      QED_kernel_temps kqed_t,  unsigned const VOLUME, int const g_proc_coords[4], MPI_Comm g_cart_grid,
@@ -694,16 +977,16 @@ __host__ void compute_2p2_gpu(double *fwd_y, double *P1, double *P23, int iflavo
     int *gycoords_d;
     int const Lmax = get_max(T_global, LX_global, LY_global, LZ_global);
     
-    // Create Streams for concurrent execution
-    cudaStream_t /* stream_p23,  */stream_p1, stream_p20, stream_p21, stream_p3;
-    cudaStreamCreate(&stream_p20);
-    cudaStreamCreate(&stream_p21);
-    cudaStreamCreate(&stream_p3);
+    // Create Streams for concurrent execution, one per P23 block
+    // P23 is [2][geometry][y][kernel][64]: minimum image, then zerohalf
+    cudaStream_t stream_p1, stream_p23[2 * kernel_n_geom];
+    for (int b = 0; b < 2 * kernel_n_geom; b++) cudaStreamCreate(&stream_p23[b]);
     cudaStreamCreate(&stream_p1);
 
     // Allocation
     size_t const size_pi = 4 * 4 * VOLUME;
-    size_t const size_p23 = n_y * kernel_n * kernel_n_geom * 4 * 4 * 4;
+    size_t const size_p23_block = (size_t)n_y * kernel_n * 4 * 4 * 4;
+    size_t const size_p23 = 2 * kernel_n_geom * size_p23_block;
     size_t const size_p1  = 4 * 4 * 4 * Lmax;
 
     check(cudaMalloc((void **)&Pi_d, size_pi * sizeof(double)));
@@ -734,15 +1017,21 @@ __host__ void compute_2p2_gpu(double *fwd_y, double *P1, double *P23, int iflavo
     /* --- 3. CONCURRENT KERNEL LAUNCH --- */
 
     
-    // --- Stream x3: P23 ---
+    // --- Stream x6: P23, minimum image then zerohalf ---
     dim3 gridP23(88, kernel_n);
     dim3 blockP23(256);
-    kernel_p20<<<gridP23, blockP23, 0, stream_p20>>>(Pi_d, P23_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
-    kernel_p21<<<gridP23, blockP23, 0, stream_p21>>>(Pi_d, P23_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
-    kernel_p3<<<gridP23, blockP23, 0, stream_p3>>>(Pi_d,P23_d,n_y,gsw ,gycoords_d,xunit,kqed_t,VOLUME,g_proc_coords,T,LX ,LY,LZ,T_global,LX_global ,LY_global,LZ_global);
-    cudaMemcpyAsync(P23, P23_d, size_p23/3 * sizeof(double), cudaMemcpyDeviceToHost, stream_p20);
-    cudaMemcpyAsync(P23 + size_p23/3, P23_d + size_p23/3, size_p23/3 * sizeof(double), cudaMemcpyDeviceToHost, stream_p21);
-    cudaMemcpyAsync(P23 + 2*size_p23/3, P23_d + 2*size_p23/3, size_p23/3 * sizeof(double), cudaMemcpyDeviceToHost, stream_p3);    
+    double *const P23_mi_d = P23_d;
+    double *const P23_zh_d = P23_d + kernel_n_geom * size_p23_block;
+    kernel_p20<<<gridP23, blockP23, 0, stream_p23[0]>>>(Pi_d, P23_mi_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+    kernel_p21<<<gridP23, blockP23, 0, stream_p23[1]>>>(Pi_d, P23_mi_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+    kernel_p3<<<gridP23, blockP23, 0, stream_p23[2]>>>(Pi_d, P23_mi_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+    kernel_p20_zh<<<gridP23, blockP23, 0, stream_p23[3]>>>(Pi_d, P23_zh_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+    kernel_p21_zh<<<gridP23, blockP23, 0, stream_p23[4]>>>(Pi_d, P23_zh_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+    kernel_p3_zh<<<gridP23, blockP23, 0, stream_p23[5]>>>(Pi_d, P23_zh_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+    for (int b = 0; b < 2 * kernel_n_geom; b++) {
+        cudaMemcpyAsync(P23 + b * size_p23_block, P23_d + b * size_p23_block,
+                        size_p23_block * sizeof(double), cudaMemcpyDeviceToHost, stream_p23[b]);
+    }
 
         // --- Stream x1: P1 ---
     dim3 gridP1(4, 4, 4);
@@ -752,42 +1041,30 @@ __host__ void compute_2p2_gpu(double *fwd_y, double *P1, double *P23, int iflavo
 
 
     /* --- 4. MPI REDUCTION --- */
-    MPI_Request request[4];    
+    MPI_Request request[2 * kernel_n_geom + 1];
 
-    cudaStreamSynchronize(stream_p20);
-    if(MPI_Iallreduce(MPI_IN_PLACE, P23, size_p23/3, MPI_DOUBLE, MPI_SUM, g_cart_grid, &request[0]) != MPI_SUCCESS) {
-        fprintf(stderr, "[] Error from MPI_Iallreduce %s %d\n", __FILE__, __LINE__ );
-        MPI_Abort(g_cart_grid, -1);
-    }
-
-    cudaStreamSynchronize(stream_p21);
-    if(MPI_Iallreduce(MPI_IN_PLACE, P23+size_p23/3, size_p23/3, MPI_DOUBLE, MPI_SUM, g_cart_grid, &request[1]) != MPI_SUCCESS) {
-        fprintf(stderr, "[] Error from MPI_Iallreduce %s %d\n", __FILE__, __LINE__ );
-        MPI_Abort(g_cart_grid, -1);
-    }
-
-    cudaStreamSynchronize(stream_p3);
-    if(MPI_Iallreduce(MPI_IN_PLACE, P23+2*size_p23/3, size_p23/3, MPI_DOUBLE, MPI_SUM, g_cart_grid, &request[2]) != MPI_SUCCESS) {
-        fprintf(stderr, "[] Error from MPI_Iallreduce %s %d\n", __FILE__, __LINE__ );
-        MPI_Abort(g_cart_grid, -1);
+    for (int b = 0; b < 2 * kernel_n_geom; b++) {
+        cudaStreamSynchronize(stream_p23[b]);
+        if(MPI_Iallreduce(MPI_IN_PLACE, P23 + b * size_p23_block, size_p23_block, MPI_DOUBLE, MPI_SUM, g_cart_grid, &request[b]) != MPI_SUCCESS) {
+            fprintf(stderr, "[] Error from MPI_Iallreduce %s %d\n", __FILE__, __LINE__ );
+            MPI_Abort(g_cart_grid, -1);
+        }
     }
 
     cudaStreamSynchronize(stream_p1);
-    if(MPI_Iallreduce(MPI_IN_PLACE, P1, size_p1, MPI_DOUBLE, MPI_SUM, g_cart_grid, &request[3]) != MPI_SUCCESS) {
+    if(MPI_Iallreduce(MPI_IN_PLACE, P1, size_p1, MPI_DOUBLE, MPI_SUM, g_cart_grid, &request[2 * kernel_n_geom]) != MPI_SUCCESS) {
         fprintf(stderr, "[] Error from MPI_Iallreduce %s %d\n", __FILE__, __LINE__ );
         MPI_Abort(g_cart_grid, -1);
     }
 
-    MPI_Waitall(4, request, MPI_STATUSES_IGNORE);
+    MPI_Waitall(2 * kernel_n_geom + 1, request, MPI_STATUSES_IGNORE);
 
     cudaFree(Pi_d);
     cudaFree(P23_d);
     cudaFree(P1_d);
     cudaFree(gycoords_d);
     cudaStreamDestroy(stream_p1);
-    cudaStreamDestroy(stream_p20);
-    cudaStreamDestroy(stream_p21);
-    cudaStreamDestroy(stream_p3);
+    for (int b = 0; b < 2 * kernel_n_geom; b++) cudaStreamDestroy(stream_p23[b]);
 }
 
 // compare pi computed on cpu and gpu 
@@ -908,7 +1185,7 @@ __host__ void record_2p2_cuda(double *fwd_y, double *P1, double *P23, int iflavo
     if (g_proc_coords[0]==0 && g_proc_coords[1]==0 && g_proc_coords[2]==0 && g_proc_coords[3]==0) {
 
         FILE *file23;
-        for (int i=0; i< n_y * kernel_n * kernel_n_geom * 4 * 4 *4; i++) {
+        for (int i=0; i< 2 * n_y * kernel_n * kernel_n_geom * 4 * 4 *4; i++) {
             file23 = fopen("2p2_p23_cuda.dat", "a");
             fprintf(file23, "%.10e\n", P23[i]);
             fclose(file23);

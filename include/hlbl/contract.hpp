@@ -28,7 +28,8 @@ inline constexpr int kGeom2p2 = CUDA_N_QED_GEOM;    // 3: P2_0, P2_1, P3
 //   p1   [4][4][4][Lmax]        P1[rho][sigma][nu][zeta]: Pi_{sigma nu}(z)
 //                               summed over the sites z with
 //                               (z - w)_rho mod L_rho = zeta (0 for zeta >= L_rho)
-//   p23  [targets][3][4][4][4]  P2_0, P2_1, P3 [rho][sigma][nu], rho < sigma
+//   p23  [targets][6][4][4][4]  P2_0, P2_1, P3 minimum image, then P2_0, P2_1,
+//                               P3 zerohalf; each [rho][sigma][nu], rho < sigma
 // with Lmax the largest global extent.
 struct Pieces2p2 {
   std::vector<double> p1;

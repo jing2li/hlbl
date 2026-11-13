@@ -153,7 +153,7 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
     ds_pair_w_ = make_dataset(g, "pair_w", H5T_NATIVE_INT, {4});
     ds_pair_y_ = make_dataset(g, "pair_y", H5T_NATIVE_INT, {4});
     ds_pair_yv_ = make_dataset(g, "pair_yv", H5T_NATIVE_INT, {4});
-    ds_p23_ = make_dataset(g, "P23", H5T_NATIVE_DOUBLE, {3, 4, 4, 4});
+    ds_p23_ = make_dataset(g, "P23", H5T_NATIVE_DOUBLE, {6, 4, 4, 4});
     attr_string(g, "rows",
                 "w, chain, window, P1: one row per 2+2 source, at its first solve; "
                 "pair_w, pair_y, pair_yv, P23: one row per (source, target)");
@@ -161,7 +161,9 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
                 "P1[row][rho][sigma][nu][zeta]: Pi_{sigma nu}(z) summed over the "
                 "sites z with (z - w)_rho mod L_rho = zeta; 0 for zeta >= L_rho");
     attr_string(g, "P23_index",
-                "P23[row][geometry][rho][sigma][nu], geometry P2_0, P2_1, P3; "
+                "P23[row][geometry][rho][sigma][nu], geometry 0-2 P2_0, P2_1, P3 "
+                "with minimum-image site maps ([-L/2, L/2)), 3-5 the same with "
+                "cvc's zerohalf maps (L/2 -> 0) as the earlier cvc runs; "
                 "only rho < sigma is filled");
     attr_string(g, "flavour",
                 "operator 0 only (iflavor 0 of compute_2p2_gpu, as cvc): the "
@@ -255,7 +257,7 @@ void ResultWriter::append_2p2(const std::vector<Result2p2>& rows) {
   std::vector<double> p1, p23;
   for (const Result2p2& r : rows) {
     if (r.p1.size() != 64 * lmax || r.y.size() != r.yv.size() ||
-        r.p23.size() != r.y.size() * 3 * 64) {
+        r.p23.size() != r.y.size() * 6 * 64) {
       throw std::logic_error("hlbl::ResultWriter: 2+2 row of the wrong size");
     }
     w.insert(w.end(), r.w.begin(), r.w.end());
@@ -289,7 +291,7 @@ void ResultWriter::append_2p2(const std::vector<Result2p2>& rows) {
     append_rows(static_cast<hid_t>(ds_pair_yv_), H5T_NATIVE_INT, pair_yv.data(),
                 first_pair, n_pairs, {4});
     append_rows(static_cast<hid_t>(ds_p23_), H5T_NATIVE_DOUBLE, p23.data(),
-                first_pair, n_pairs, {3, 4, 4, 4});
+                first_pair, n_pairs, {6, 4, 4, 4});
     count_pairs_2p2_ += static_cast<long long>(n_pairs);
   }
   check(H5Fflush(static_cast<hid_t>(file_), H5F_SCOPE_GLOBAL), "flush");

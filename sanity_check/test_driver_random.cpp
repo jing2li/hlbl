@@ -195,7 +195,7 @@ int main(int argc, char** argv) {
     for (std::size_t t = 0; t < r.y.size(); ++t) {
       HLBL_CHECK(r.yv[t] == lat.site_map_diff(r.y[t], r.w));
     }
-    HLBL_CHECK(r.p1.size() == 64u * 6 && r.p23.size() == r.y.size() * 3 * 64);
+    HLBL_CHECK(r.p1.size() == 64u * 6 && r.p23.size() == r.y.size() * 6 * 64);
   }
   // the same pieces directly from freshly generated fields
   for (const Result2p2& r : dev_2p2) {
@@ -378,7 +378,7 @@ int main(int argc, char** argv) {
     auto pair_yv = read_ints(f, "2p2/pair_yv", d);
     HLBL_CHECK(d.size() == 2 && d[0] == static_cast<hsize_t>(stats.targets_2p2));
     auto p23 = read_doubles(f, "2p2/P23", d);
-    HLBL_CHECK(d.size() == 5 && d[1] == 3 && d[4] == 4);
+    HLBL_CHECK(d.size() == 5 && d[1] == 6 && d[4] == 4);
     std::size_t row = 0;
     for (std::size_t i = 0; i < dev_2p2.size(); ++i) {
       const Result2p2& r = dev_2p2[i];
@@ -393,8 +393,8 @@ int main(int argc, char** argv) {
           HLBL_CHECK(pair_y[4 * row + k] == r.y[t][k]);
           HLBL_CHECK(pair_yv[4 * row + k] == r.yv[t][k]);
         }
-        for (int j = 0; j < 3 * 64; ++j) {
-          HLBL_CHECK(p23[row * 3 * 64 + j] == r.p23[t * 3 * 64 + j]);
+        for (int j = 0; j < 6 * 64; ++j) {
+          HLBL_CHECK(p23[row * 6 * 64 + j] == r.p23[t * 6 * 64 + j]);
         }
       }
     }
