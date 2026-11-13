@@ -163,8 +163,10 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
                 "P1[row][rho][sigma][nu][zeta]: Pi_{sigma nu}(z) summed over the "
                 "sites z with (z - w)_rho mod L_rho = zeta; 0 for zeta >= L_rho");
     attr_string(g, "P234_index",
-                "P234[row][geometry][rho][sigma][nu], geometry P2_0, P2_1, P3, "
-                "P4_0, P4_1; only rho < sigma is filled (P4_1: rho != sigma)");
+                "P234[row][geometry][rho][sigma][nu], geometry 0-4 P2_0, P2_1, "
+                "P3, P4_0, P4_1 with minimum-image site maps ([-L/2, L/2)), 5-7 "
+                "P2_0, P2_1, P3 with cvc's zerohalf maps (L/2 -> 0) as the "
+                "earlier cvc runs; only rho < sigma is filled (P4_1: rho != sigma)");
     attr_string(g, "flavour",
                 "operator 0 only (iflavor 0 of compute_2p2_gpu, as cvc): the "
                 "two-point function is the same for both flavours");

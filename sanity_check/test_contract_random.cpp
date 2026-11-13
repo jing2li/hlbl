@@ -78,15 +78,16 @@ int main(int argc, char** argv) {
     Vec4 const w{1, 2, 3, 4}, a{3, 3, 3, 3}, b{0, 5, 1, 2};
     Pieces2p2 const ab = c6.pieces_2p2(d_w.get(), w, {a, b}, 1.0);
     HLBL_CHECK(ab.p1.size() == 64u * lmax && ab.p234.size() == 2u * kGeom2p2 * 64);
-    double sum_p1 = 0, sum_p23 = 0, sum_p4 = 0;
+    double sum_p1 = 0, sum_p23 = 0, sum_p4 = 0, sum_p23_zh = 0;
     for (double v : ab.p1) {
       HLBL_CHECK(std::isfinite(v));
       sum_p1 += v;
     }
     for (std::size_t i = 0; i < ab.p234.size(); ++i) {
       HLBL_CHECK(std::isfinite(ab.p234[i]));
-      // P2_0, P2_1, P3 or P4_0, P4_1
-      (i / 64 % kGeom2p2 < 3 ? sum_p23 : sum_p4) += ab.p234[i];
+      // P2_0, P2_1, P3 or P4_0, P4_1 (minimum image), or P2_0, P2_1, P3 zerohalf
+      std::size_t const geom = i / 64 % kGeom2p2;
+      (geom < 3 ? sum_p23 : geom < 5 ? sum_p4 : sum_p23_zh) += ab.p234[i];
     }
 
     auto near = [](double x, double ref) {
@@ -102,7 +103,7 @@ int main(int argc, char** argv) {
       for (int rho = 1; rho < 4; ++rho) HLBL_CHECK(near(total[rho], total[0]));
     }
     // P234[target][geometry][rho][sigma][nu]: only rho < sigma is filled,
-    // except P4_1 (geometry 4): rho != sigma
+    // except P4_1 (geometry 4): rho != sigma; geometries 5-7 are zerohalf
     for (int t = 0; t < 2; ++t) {
       for (int geom = 0; geom < kGeom2p2; ++geom) {
         for (int rho = 0; rho < 4; ++rho) {
@@ -122,12 +123,15 @@ int main(int argc, char** argv) {
     }
     for (int i = 0; i < 64 * lmax; ++i) HLBL_CHECK(near(only_b.p1[i], ab.p1[i]));
 
-    // stored values from the first run (P4: from the run that added it)
-    const double golden_2p2[3] = {1.9010328152022312e+03, -9.3714854604502837e-02,
-                                  8.2386837480270175e-02};
-    double const got[3] = {sum_p1, sum_p23, sum_p4};
-    const char* const name[3] = {"sum P1", "sum P2_0, P2_1, P3", "sum P4_0, P4_1"};
-    for (int k = 0; k < 3; ++k) {
+    // stored values from the first run (P4: from the run that added it; the
+    // zerohalf P2_0, P2_1, P3 from the first run of kernel_p2{0,1}_zh and
+    // kernel_p3_zh, regression only, not checked against cvc)
+    const double golden_2p2[4] = {1.9010328152022312e+03, -9.3714854604502837e-02,
+                                  8.2386837480270175e-02, -1.2447554604340659e-01};
+    double const got[4] = {sum_p1, sum_p23, sum_p4, sum_p23_zh};
+    const char* const name[4] = {"sum P1", "sum P2_0, P2_1, P3", "sum P4_0, P4_1",
+                                 "sum P2_0, P2_1, P3 zerohalf"};
+    for (int k = 0; k < 4; ++k) {
       if (!near(got[k], golden_2p2[k])) {
         std::fprintf(stderr, "2+2 %s: got %.17g, golden %.17g\n", name[k], got[k],
                      golden_2p2[k]);

@@ -234,7 +234,7 @@ MemoryEstimate estimate_memory(const Lattice& lattice, int peak_positions,
   e.peak_positions = peak_positions;
   if (max_targets_2p2 > 0) {
     // compute_2p2_gpu: Pi (16 doubles per site), P1 (64 Lmax), P234 (kGeom2p2
-    // x 64 per target) and the target list
+    // x 64 per target: minimum image and zerohalf) and the target list
     const Vec4& g = lattice.global();
     std::size_t const lmax = *std::max_element(g.begin(), g.end());
     std::size_t const n = static_cast<std::size_t>(max_targets_2p2);

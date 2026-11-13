@@ -52,14 +52,16 @@ Both kernel files evaluate a single QED kernel, LΛ with Λ = 0.4
 | 2026-11-19 | (uncommitted) | `cuda_lattice.h` | `CUDA_N_QED_GEOM` 3 → 5. |
 | 2026-11-19 | (uncommitted) | `hlbl_kernels/kernels.cu` | `kernel_p4`: P4_0 and P4_1 as in `ker_2p2_pieces`; `kernel_n_geom` 5, an `#error` unless `kernel_n`, `kernel_n_geom` match `cuda_lattice.h`; `MPI_Waitall` of all five requests. Removed unused code: `kernel_4pt`, `compute_4pt_gpu`, `record_*_cuda`, `call_KQED`, `test_KQED_on_gpu`, `kqed_set_zero`, `union array`, `idx_comb_d`, `site_map_zerohalf` and commented-out lines. P23 renamed P234. |
 | 2026-11-19 | (uncommitted) | `hlbl_kernels/kernels.cuh` | Declarations of the removed functions dropped; P234. |
+| 2026-11-19 | (uncommitted) | `cuda_lattice.h` | diff_zerohalf: `CUDA_N_QED_GEOM_ZH` 3, the zerohalf copies of P2_0, P2_1, P3. |
+| 2026-11-19 | (uncommitted) | `hlbl_kernels/kernels.cu` | diff_zerohalf (first 2026-11-13, rebased onto P4): P2_0, P2_1, P3 computed a second time, to compare with the earlier cvc runs. `site_map_zerohalf` restored; `kernel_p20_zh`, `kernel_p21_zh`, `kernel_p3_zh` are `kernel_p20`/`p21`/`p3` with `site_map_zerohalf` for every QED kernel argument (`p20_zh`, `p21_zh` as cvc at `90da285`, `p21_zh` with the reduction fix above; `p3_zh` takes x − y unwrapped, zh(x) + zh(−y), where cvc wrapped x − y before zerohalf). `compute_2p2_gpu` fills P234 as `[5 + 3][y][kernel][64]`: the five minimum-image geometries as before, then the three zerohalf ones, one stream, copy and `MPI_Iallreduce` each; `kernel_n_geom_zh` 3, in the `#error` check. No zerohalf P4: the cvc runs had none. The caller's P234 is 8 geometries long. |
 
 sha256 now:
 
 | file | sha256 |
 |---|---|
 | `cuda_lattice.cu` | `1d90760f70441b2250a135f1f1847e01cb8231cd2cdf2ef1da3d5b4c391d769f` |
-| `cuda_lattice.h` | `a1784c14b948c11522e419459b6767b59d2874016d2d345d3593c34eae4ca308` |
-| `hlbl_kernels/kernels.cu` | `4a5750b4497c4474708517665d889d16c90037bbb84cd50d8fd83120039cb991` |
+| `cuda_lattice.h` | `6cb9bb126c2f97645b1b80ac4803430060c48fcd110f1af7b5876beb86a11547` |
+| `hlbl_kernels/kernels.cu` | `ff6462a581c169b0d1dd71a84caaa3f550d5d59aadd3e59c91e369844219bd7c` |
 | `hlbl_kernels/kernels.cuh` | `94c3a430db23a6bdedf291ff8616165ddc4e169304a06be51292772168ca98db` |
 
 The other files are as copied.

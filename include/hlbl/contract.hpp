@@ -22,13 +22,15 @@ inline constexpr int kDzsuLen = 4 * 12 * 24;
 inline constexpr int kGDzuLen = 6 * 4 * 12 * 24;
 inline constexpr int kGDzsuLen = 4 * 4 * 12 * 24;
 inline constexpr int kKernelN = CUDA_N_QED_KERNEL;  // 1: LLambda0.4 only
-inline constexpr int kGeom2p2 = CUDA_N_QED_GEOM;    // 5: P2_0, P2_1, P3, P4_0, P4_1
+// 8: P2_0, P2_1, P3, P4_0, P4_1 minimum image, then P2_0, P2_1, P3 zerohalf
+inline constexpr int kGeom2p2 = CUDA_N_QED_GEOM + CUDA_N_QED_GEOM_ZH;
 
 // The 2+2 pieces of one source w, MPI-summed on every rank:
 //   p1   [4][4][4][Lmax]        P1[rho][sigma][nu][zeta]: Pi_{sigma nu}(z)
 //                               summed over the sites z with
 //                               (z - w)_rho mod L_rho = zeta (0 for zeta >= L_rho)
-//   p234 [targets][5][4][4][4]  P2_0, P2_1, P3, P4_0, P4_1 [rho][sigma][nu],
+//   p234 [targets][8][4][4][4]  P2_0, P2_1, P3, P4_0, P4_1 minimum image, then
+//                               P2_0, P2_1, P3 zerohalf; each [rho][sigma][nu],
 //                               rho < sigma (P4_1: rho != sigma)
 // with Lmax the largest global extent.
 struct Pieces2p2 {

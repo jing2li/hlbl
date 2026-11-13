@@ -42,6 +42,8 @@ struct Pair {
 /* keep in step with kernel_n in hlbl_mII_invert_contract.cpp / hlbl_kernels */
 #define CUDA_N_QED_KERNEL 1
 #define CUDA_N_QED_GEOM 5
+/* diff_zerohalf: P2_0, P2_1, P3 once more with zerohalf maps, after the five */
+#define CUDA_N_QED_GEOM_ZH 3
 
 void cu_spinor_field_eq_gamma_ti_spinor_field(
     double* out, int mu, const double* in, size_t len);
