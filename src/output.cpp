@@ -2,6 +2,8 @@
 
 #include <hdf5.h>
 
+#include "hlbl/contract.hpp"  // kGeom2p2
+
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -153,16 +155,16 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
     ds_pair_w_ = make_dataset(g, "pair_w", H5T_NATIVE_INT, {4});
     ds_pair_y_ = make_dataset(g, "pair_y", H5T_NATIVE_INT, {4});
     ds_pair_yv_ = make_dataset(g, "pair_yv", H5T_NATIVE_INT, {4});
-    ds_p23_ = make_dataset(g, "P23", H5T_NATIVE_DOUBLE, {3, 4, 4, 4});
+    ds_p234_ = make_dataset(g, "P234", H5T_NATIVE_DOUBLE, {kGeom2p2, 4, 4, 4});
     attr_string(g, "rows",
                 "w, chain, window, P1: one row per 2+2 source, at its first solve; "
-                "pair_w, pair_y, pair_yv, P23: one row per (source, target)");
+                "pair_w, pair_y, pair_yv, P234: one row per (source, target)");
     attr_string(g, "P1_index",
                 "P1[row][rho][sigma][nu][zeta]: Pi_{sigma nu}(z) summed over the "
                 "sites z with (z - w)_rho mod L_rho = zeta; 0 for zeta >= L_rho");
-    attr_string(g, "P23_index",
-                "P23[row][geometry][rho][sigma][nu], geometry P2_0, P2_1, P3; "
-                "only rho < sigma is filled");
+    attr_string(g, "P234_index",
+                "P234[row][geometry][rho][sigma][nu], geometry P2_0, P2_1, P3, "
+                "P4_0, P4_1; only rho < sigma is filled (P4_1: rho != sigma)");
     attr_string(g, "flavour",
                 "operator 0 only (iflavor 0 of compute_2p2_gpu, as cvc): the "
                 "two-point function is the same for both flavours");
@@ -205,7 +207,7 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
 ResultWriter::~ResultWriter() {
   for (long long id : {ds_x_, ds_y_, ds_yv_, ds_chain_, ds_window_, ds_kernel_,
                        ds_w_, ds_chain_2p2_, ds_window_2p2_, ds_p1_, ds_pair_w_,
-                       ds_pair_y_, ds_pair_yv_, ds_p23_}) {
+                       ds_pair_y_, ds_pair_yv_, ds_p234_}) {
     if (id >= 0) H5Dclose(static_cast<hid_t>(id));
   }
   for (long long id : {group_kernel_sum_, group_2p2_}) {
@@ -252,10 +254,10 @@ void ResultWriter::append_2p2(const std::vector<Result2p2>& rows) {
   hsize_t const lmax = static_cast<hsize_t>(lmax_);
   std::size_t const n = rows.size();
   std::vector<int> w, chain, window, pair_w, pair_y, pair_yv;
-  std::vector<double> p1, p23;
+  std::vector<double> p1, p234;
   for (const Result2p2& r : rows) {
     if (r.p1.size() != 64 * lmax || r.y.size() != r.yv.size() ||
-        r.p23.size() != r.y.size() * 3 * 64) {
+        r.p234.size() != r.y.size() * kGeom2p2 * 64) {
       throw std::logic_error("hlbl::ResultWriter: 2+2 row of the wrong size");
     }
     w.insert(w.end(), r.w.begin(), r.w.end());
@@ -267,7 +269,7 @@ void ResultWriter::append_2p2(const std::vector<Result2p2>& rows) {
       pair_y.insert(pair_y.end(), r.y[t].begin(), r.y[t].end());
       pair_yv.insert(pair_yv.end(), r.yv[t].begin(), r.yv[t].end());
     }
-    p23.insert(p23.end(), r.p23.begin(), r.p23.end());
+    p234.insert(p234.end(), r.p234.begin(), r.p234.end());
   }
   hsize_t const first = static_cast<hsize_t>(count_2p2_);
   append_rows(static_cast<hid_t>(ds_w_), H5T_NATIVE_INT, w.data(), first, n, {4});
@@ -288,8 +290,8 @@ void ResultWriter::append_2p2(const std::vector<Result2p2>& rows) {
                 first_pair, n_pairs, {4});
     append_rows(static_cast<hid_t>(ds_pair_yv_), H5T_NATIVE_INT, pair_yv.data(),
                 first_pair, n_pairs, {4});
-    append_rows(static_cast<hid_t>(ds_p23_), H5T_NATIVE_DOUBLE, p23.data(),
-                first_pair, n_pairs, {3, 4, 4, 4});
+    append_rows(static_cast<hid_t>(ds_p234_), H5T_NATIVE_DOUBLE, p234.data(),
+                first_pair, n_pairs, {kGeom2p2, 4, 4, 4});
     count_pairs_2p2_ += static_cast<long long>(n_pairs);
   }
   check(H5Fflush(static_cast<hid_t>(file_), H5F_SCOPE_GLOBAL), "flush");

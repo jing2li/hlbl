@@ -30,7 +30,7 @@ struct Result2p2 {
   std::vector<double> p1;   // [4][4][4][Lmax]
   std::vector<Vec4> y;      // the targets, global sites in [0, L)
   std::vector<Vec4> yv;     // y - w, minimum image in [-L/2, L/2)
-  std::vector<double> p23;  // [targets][3][4][4][4]: P2_0, P2_1, P3
+  std::vector<double> p234;  // [targets][5][4][4][4]: P2_0, P2_1, P3, P4_0, P4_1
 };
 
 // What identifies a run; stored in the result file.
@@ -56,7 +56,7 @@ struct RunInfo {
 //     P1[M][4][4][4][Lmax]           double
 //                 and one row per (source, target)
 //     pair_w[R][4], pair_y[R][4], pair_yv[R][4]  int
-//     P23[R][3][4][4][4]             double  (P2_0, P2_1, P3)
+//     P234[R][5][4][4][4]            double  (P2_0, P2_1, P3, P4_0, P4_1)
 // plus the table chains[C][10], and RunInfo as attributes. Each append is
 // flushed, so a killed job keeps its finished windows.
 class ResultWriter {
@@ -78,7 +78,7 @@ class ResultWriter {
   long long ds_x_ = -1, ds_y_ = -1, ds_yv_ = -1, ds_chain_ = -1,
             ds_window_ = -1, ds_kernel_ = -1;
   long long ds_w_ = -1, ds_chain_2p2_ = -1, ds_window_2p2_ = -1, ds_p1_ = -1,
-            ds_pair_w_ = -1, ds_pair_y_ = -1, ds_pair_yv_ = -1, ds_p23_ = -1;
+            ds_pair_w_ = -1, ds_pair_y_ = -1, ds_pair_yv_ = -1, ds_p234_ = -1;
   int lmax_ = 0;  // largest global extent: the last dimension of P1
   long long count_ = 0;
   long long count_2p2_ = 0, count_pairs_2p2_ = 0;

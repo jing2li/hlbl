@@ -22,17 +22,18 @@ inline constexpr int kDzsuLen = 4 * 12 * 24;
 inline constexpr int kGDzuLen = 6 * 4 * 12 * 24;
 inline constexpr int kGDzsuLen = 4 * 4 * 12 * 24;
 inline constexpr int kKernelN = CUDA_N_QED_KERNEL;  // 1: LLambda0.4 only
-inline constexpr int kGeom2p2 = CUDA_N_QED_GEOM;    // 3: P2_0, P2_1, P3
+inline constexpr int kGeom2p2 = CUDA_N_QED_GEOM;    // 5: P2_0, P2_1, P3, P4_0, P4_1
 
 // The 2+2 pieces of one source w, MPI-summed on every rank:
 //   p1   [4][4][4][Lmax]        P1[rho][sigma][nu][zeta]: Pi_{sigma nu}(z)
 //                               summed over the sites z with
 //                               (z - w)_rho mod L_rho = zeta (0 for zeta >= L_rho)
-//   p23  [targets][3][4][4][4]  P2_0, P2_1, P3 [rho][sigma][nu], rho < sigma
+//   p234 [targets][5][4][4][4]  P2_0, P2_1, P3, P4_0, P4_1 [rho][sigma][nu],
+//                               rho < sigma (P4_1: rho != sigma)
 // with Lmax the largest global extent.
 struct Pieces2p2 {
   std::vector<double> p1;
-  std::vector<double> p23;
+  std::vector<double> p234;
 };
 
 // fwd_src and fwd_y are device propagator blocks (block_length()) of the
@@ -76,9 +77,9 @@ class Contractor {
   DeviceBuffer<int> d_gsw_{4};
   DeviceBuffer<int> d_proc_coords_{4};
   DeviceBuffer<double> d_xunit_{2};
-  // it copies P1 and P23 to the host asynchronously and sums them there in
+  // it copies P1 and P234 to the host asynchronously and sums them there in
   // place, so they are pinned; grown on first use
-  PinnedBuffer<double> h_p1_, h_p23_;
+  PinnedBuffer<double> h_p1_, h_p234_;
 
   // The z-sum of the two propagators over all ranks, with gammas applied.
   // Fills d_g_dzu_ and d_g_dzsu_.

@@ -5,8 +5,8 @@ to the muon g−2 in position space (QED kernel LΛ, Λ = 0.4). It contracts all
 pairs of point sources at one separation |y| = 2n, taken from a
 sliding-hypercube schedule that reuses most propagators from step to step. One
 job runs a list of such chains; the gauge field is read and the multigrid set
-up once. With `2p2` lines it also computes the 2+2 pieces (P1, P2_0, P2_1, P3)
-of chosen sources, right after their first solve.
+up once. With `2p2` lines it also computes the 2+2 pieces (P1, P2_0, P2_1,
+P3, P4_0, P4_1) of chosen sources, right after their first solve.
 
 Propagators are solved with tmLQCD/QUDA. The contraction uses the GPU kernels
 of cvc's `hlbl_mII_invert_contract`, copied to `kernels/`.
@@ -98,7 +98,7 @@ ctest --test-dir build --output-on-failure
 | `compare_schedule` | C++ schedules (printed by the test program `schedule_dump`) = Python reference, also for multi-chain files (counts, totals, overlaps), the 2+2 plan and warnings, and bad-file errors |
 | `test_input` | input parser: required keys, comments, `2p2` lines, every error |
 | `test_gamma`, `test_lattice` | gamma algebra; site indexing and ownership |
-| `test_contract_random` | contraction and 2+2 pieces on random fields: finite, match stored values; index structure of P1 and P23 |
+| `test_contract_random` | contraction and 2+2 pieces on random fields: finite, match stored values; index structure of P1 and P234 |
 | `test_driver_random` | schedule loop on random fields: pair count, cache peak, device vs host cache, two chains vs independent runs, 2+2 at first solves vs direct calls, HDF5 content |
 | `hypercube_random_fields` | whole program on `sanity_check/one_chain.input` (80 pairs) |
 | `hypercube_random_fields_multi` | whole program on `sanity_check/multi_chain.input` (2 chains, 225 pairs, 2+2 at 3 sources) |
@@ -208,9 +208,9 @@ shared sources.
 A `2p2` line names a source and its targets. Right after the first solve of
 the source in the run (chains in input order, then windows, then solve
 order), `compute_2p2_gpu` computes from that block its P1 and, for every
-target, P2_0, P2_1 and P3; then the source's pairs are contracted as usual.
-Only flavour 0 is computed, as in cvc: the two-point function is the same for
-both. A site solved again, by another chain or by a chain that wraps, gets no
+target, P2_0, P2_1, P3, P4_0 and P4_1; then the source's pairs are
+contracted as usual. Only flavour 0 is computed, as in cvc: the two-point
+function is the same for both. A site solved again, by another chain or by a chain that wraps, gets no
 second 2+2. The source must be solved by a chain; targets need no propagator.
 
 `--dummy-run` and the Python script warn about solved sites that are no 2+2
@@ -236,13 +236,13 @@ and 16 do not fit in host memory.
 The kernel stack: the 4-point kernel uses 27,112 B of stack per thread (STACK
 of `ker_4pt_contraction` in `cuobjdump --dump-resource-usage
 build/hlbl_hypercube`; 41,280 B before `b677727`), the 2+2 kernels
-(`kernel_p20`, `p21`, `p3`) 16,552 B. The CUDA driver reserves the largest
-stack of the kernels launched for every thread slot (132 SMs × 2048), so 2+2
-adds none: 6.8 GiB per GPU (6.64 GiB measured by `--dummy-run`). With 2+2 the
-GPU also holds the buffers of `compute_2p2_gpu`: Π, 128 B per local site
-(0.13 GiB at 32⁴), and P1, P23. The Python script tabulates memory per node
-count from these numbers (`--kernel-stack-bytes`, `--kernel-stack-bytes-2p2`,
-`--solver-gb`, `--solver-host-gb`, ...).
+(`kernel_p20`, `p21`, `p3`, `p4`) up to 17,448 B. The CUDA driver reserves
+the largest stack of the kernels launched for every thread slot (132 SMs ×
+2048), so 2+2 adds none: 6.8 GiB per GPU (6.64 GiB measured by `--dummy-run`).
+With 2+2 the GPU also holds the buffers of `compute_2p2_gpu`: Π, 128 B per
+local site (0.13 GiB at 32⁴), and P1, P234. The Python script tabulates memory
+per node count from these numbers (`--kernel-stack-bytes`,
+`--kernel-stack-bytes-2p2`, `--solver-gb`, `--solver-host-gb`, ...).
 
 ### Run time
 
@@ -257,9 +257,11 @@ window adds 15 × 40.6 s + 65 × 5.7 s ≈ 980 s, or 2.2 node-hours.
 
 2+2: about 52 s per source with 16 targets (cvc `time_2p2` at 8 nodes,
 `~/cvc_timing/cB/strong-2p2`), so a 2+2 at every new source adds about 780 s
-per window. Its P2/P3 kernels run one block per target and geometry, at one
-block per SM, so on a GH200 (132 SMs) up to 44 targets should cost about the
-same as 16 (not measured). `--t-2p2` of the Python script takes this time.
+per window. Its P2/P3/P4 kernels run one block per target and geometry, at
+one block per SM, so on a GH200 (132 SMs) up to 33 targets should cost about
+the same as 16 (not measured). `--t-2p2` of the Python script takes this time.
+With P4, `compute_2p2_gpu` takes 4.6 s for 16 targets at 262,144 local sites
+on one GH200 (cvc's `cu_2p2_pieces`: 2.2 s).
 
 ### Output
 
@@ -279,14 +281,14 @@ files from before 2+2), the 2+2 pieces, with `2p2` lines, in the group `2p2`.
 | `2p2/P1` | M × 4 × 4 × 4 × Lmax double | P1[ρ][σ][ν][ζ]: Π_σν(z) summed over the sites with (z − w)_ρ mod L_ρ = ζ; 0 for ζ ≥ L_ρ |
 | `2p2/pair_w`, `2p2/pair_y` | R × 4 int | source and target of each (source, target) row |
 | `2p2/pair_yv` | R × 4 int | pair_y − pair_w, minimum image in [−L/2, L/2) |
-| `2p2/P23` | R × 3 × 4 × 4 × 4 double | P2_0, P2_1, P3, each [ρ][σ][ν], only ρ < σ filled |
+| `2p2/P234` | R × 5 × 4 × 4 × 4 double | P2_0, P2_1, P3, P4_0, P4_1, each [ρ][σ][ν], only ρ < σ filled (P4_1: ρ ≠ σ) |
 | `chains` | C × 10 int | chains as run: start (4), dir (4), stride, steps (resolved) |
 
 Attributes: `lattice`, `procs`, `nconf`, `chains_columns`, `kernel`,
 `flavour_order`, `coordinate_ranges`, `muon_mass_MeV`, `lattice_spacing_fm`,
 `xunit`. With exactly
 one chain also `direction`, `origin` and `stride`, as in files from before
-chain lists. The group `2p2` has `rows`, `P1_index`, `P23_index` and
+chain lists. The group `2p2` has `rows`, `P1_index`, `P234_index` and
 `flavour`.
 
 The timing log has one CSV row per solve, per kernel sum and per 2+2 source:
@@ -346,7 +348,8 @@ production job.
   predicted, QUDA plaquette matches the file (0.554279822834), and a rerun
   gives the same kernel sums.
 - 2+2 pieces: `compute_2p2_gpu` at the first solve of each `2p2` source,
-  tested on random fields.
+  tested on random fields; it agrees with cvc's `ker_2p2_pieces` (vendored,
+  `kernels/VENDORED.md`) to 10⁻¹⁴ on 1 and 4 ranks.
 - **Not done:** comparing the kernel sums and the 2+2 pieces with cvc's
   `hlbl_mII_invert_contract`. Correctness against production is still open.
 
