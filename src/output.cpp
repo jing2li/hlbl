@@ -168,7 +168,7 @@ ResultWriter::ResultWriter(const std::string& path, const RunInfo& info) {
                 "P2_0, P2_1, P3 with cvc's zerohalf maps (L/2 -> 0) as the "
                 "earlier cvc runs; only rho < sigma is filled (P4_1: rho != sigma)");
     attr_string(g, "flavour",
-                "operator 0 only (iflavor 0 of compute_2p2_gpu, as cvc): the "
+                "operator 0 only (iflavor 0 of cu_2p2_pieces, as cvc): the "
                 "two-point function is the same for both flavours");
   }
 

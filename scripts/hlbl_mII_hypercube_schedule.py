@@ -40,8 +40,7 @@ Memory model (per rank, GiB)
                 --kernel-stack-bytes-2p2) x --gpu-sms x --gpu-threads-per-sm:
                 the CUDA driver reserves it for every thread slot
   reserve       --reserve-gb: CUDA context, cuBLAS, MPI buffers. 0 by default.
-  2+2 buffers   with 2p2 lines: Pi (16 doubles per local site, not sparsened),
-                P1 and P234 of the largest target list
+  2+2 buffers   with 2p2 lines: P1 and P234 of the largest target list
   solver host   --solver-host-gb: host memory beside the cache, the MaxRSS of
                 `hlbl_hypercube --dummy-run` with cache = device. 15 GiB by
                 default.
@@ -86,11 +85,11 @@ QUDA_DEV_GIB = ((2097152, 22.07), (1048576, 11.38), (524288, 5.89), (262144, 3.0
 GPU_MEM_GB = 95.6         # nvidia-smi memory.total of a GH200: 97871 MiB
 
 # Kernel stack (see "Memory model"): STACK of ker_4pt_contraction and of
-# the largest of kernel_p20/p21/p3/p4 (2+2) in `cuobjdump --dump-resource-usage
+# ker_2p2_pieces (2+2) in `cuobjdump --dump-resource-usage
 # build/hlbl_hypercube` (build of b677727; 41280 for ker_4pt_contraction
 # before), and a GH200's SMs and threads per SM.
 KERNEL_STACK_BYTES = 27112
-KERNEL_STACK_BYTES_2P2 = 17448
+KERNEL_STACK_BYTES_2P2 = 21160
 GPU_SMS = 132
 GPU_THREADS_PER_SM = 2048
 SOLVER_HOST_GB = 15.0     # host memory beside the cache, per rank (README)
@@ -793,13 +792,13 @@ def memory_report(stats_by_mode, lattice, procs, precision, sparsen,
     lmax = max(lattice)
 
     def buffers_2p2(ranks):
-        """compute_2p2_gpu's device buffers per rank, bytes: Pi (16 doubles per
-        local site, not sparsened), P1, P234 (8 x 64 doubles per target: 5
-        minimum image, 3 zerohalf) and the targets. 0 without 2+2."""
+        """cu_2p2_pieces' device buffers per rank, bytes: P1, P234 (8 x 64
+        doubles per target: 5 minimum image, 3 zerohalf) and the targets. 0
+        without 2+2."""
         if not max_targets_2p2:
             return 0.0
         n = max_targets_2p2
-        return (16 * volume / ranks + 64 * lmax + 8 * 64 * n) * 8 + 16 * n
+        return (64 * lmax + 8 * 64 * n) * 8 + 16 * n
 
     def fit(cache, block, res):
         """GPU: cache + res on the device. host: cache in pinned host memory
@@ -836,13 +835,13 @@ def memory_report(stats_by_mode, lattice, procs, precision, sparsen,
               f"({which}) x {stack[1]} SMs x {stack[2]} threads = {stack_gb:.2f} GB per GPU")
         print("  (the driver reserves the largest stack of the kernels launched;")
         print("   --kernel-stack-bytes, --kernel-stack-bytes-2p2: STACK of ker_4pt_contraction, "
-              "kernel_p20/p21/p3/p4 in `cuobjdump --dump-resource-usage build/hlbl_hypercube`;")
+              "ker_2p2_pieces in `cuobjdump --dump-resource-usage build/hlbl_hypercube`;")
     print("   --gpu-sms, --gpu-threads-per-sm: multiProcessorCount and "
           "maxThreadsPerMultiProcessor)")
     if reserve_gb:
         print(f"plus {reserve_gb:g} GB flat reserve (--reserve-gb)")
     if max_targets_2p2:
-        print(f"2+2 buffers: Pi 128 B x local sites (not sparsened), P1 and P234 of "
+        print(f"2+2 buffers: P1 and P234 of "
               f"{max_targets_2p2} targets = {buffers_2p2(math.prod(procs)) / GB:.2f} GB "
               f"per rank on procs {tuple(procs)}")
     print(f"host beside the cache: {solver_host_gb:g} GB per rank (--solver-host-gb; the "
@@ -989,7 +988,7 @@ def main():
                         "`cuobjdump --dump-resource-usage build/hlbl_hypercube`")
     g.add_argument("--kernel-stack-bytes-2p2", type=int, default=KERNEL_STACK_BYTES_2P2,
                    help="stack per thread of the 2+2 kernels (with 2p2 lines): the STACK "
-                        "column of kernel_p20/p21/p3/p4; the larger of the two stacks counts")
+                        "column of ker_2p2_pieces; the larger of the two stacks counts")
     g.add_argument("--reserve-gb", type=float, default=0.0,
                    help="flat extra per rank (CUDA context, cuBLAS and MPI buffers)")
     g.add_argument("--solver-host-gb", type=float, default=SOLVER_HOST_GB,

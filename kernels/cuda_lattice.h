@@ -57,6 +57,14 @@ void cu_4pt_contraction(
     const double* fwd_src, const double* fwd_y, int iflavor, Coord proc_coords,
     Coord gsx, Pair xunit, Coord yv, QED_kernel_temps kqed_t,
     Geom global_geom, Geom local_geom);
+/**
+ * The 2+2 pieces of the source gsw, as compute_2p2_gpu (hlbl_kernels), one
+ * thread per site. Adds to d_P1 and d_P23x (atomics): zero them first.
+ *   d_P1   [4][4][4][Lmax]        P1[rho][sigma][nu][zeta], as compute_2p2_gpu
+ *   d_P23x [n_y][CUDA_N_QED_KERNEL][CUDA_N_QED_GEOM + CUDA_N_QED_GEOM_ZH][4][4][4]
+ *          P2_0, P2_1, P3, P4_0, P4_1 minimum image, then P2_0, P2_1, P3
+ *          zerohalf (compute_2p2_gpu's P234: [geometry][y][kernel][64])
+ */
 void cu_2p2_pieces(
     double* d_P1, double* d_P23x, const double* fwd_y, int iflavor,
     Coord proc_coords, Coord gsw, int n_y, Coord* d_gycoords, Pair xunit,

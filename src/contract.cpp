@@ -4,9 +4,6 @@
 #include <array>
 
 #include "hlbl/gamma.hpp"
-// after contract.hpp: cuda_runtime.h defines __global__ for the declarations
-// in kernels.cuh, and KQED.h is already included
-#include "hlbl_kernels/kernels.cuh"
 
 namespace hlbl {
 
@@ -26,9 +23,7 @@ void insert_g5_gamma(double* out, int mu, const double* in) {
 }  // namespace
 
 Contractor::Contractor(const Lattice& lattice, QED_kernel_temps kqed_t)
-    : lattice_(lattice), kqed_t_(kqed_t) {
-  d_proc_coords_.copy_from_host(lattice_.proc_coords().data(), 4);
-}
+    : lattice_(lattice), kqed_t_(kqed_t) {}
 
 void Contractor::compute_dzu_dzsu(const double* d_fwd_src,
                                    const double* d_fwd_y, const Vec4& gsx,
@@ -116,42 +111,38 @@ std::array<double, 2> Contractor::kernel_sum(const double* d_fwd_src,
 Pieces2p2 Contractor::pieces_2p2(const double* d_fwd, const Vec4& gsw,
                                  const std::vector<Vec4>& targets,
                                  double xunit) {
-  static_assert(kKernelN == 1, "the P234 reordering below assumes one QED kernel");
+  static_assert(kKernelN == 1, "the P234 rows below assume one QED kernel");
   const Vec4& g = lattice_.global();
-  const Vec4& l = lattice_.local();
   int const lmax = *std::max_element(g.begin(), g.end());
   int const n_y = static_cast<int>(targets.size());
   std::size_t const n_p1 = 4 * 4 * 4 * static_cast<std::size_t>(lmax);
   std::size_t const n_p234 = static_cast<std::size_t>(n_y) * kGeom2p2 * 64;
-  if (h_p1_.size() < n_p1) h_p1_ = PinnedBuffer<double>(n_p1);
-  if (h_p234_.size() < n_p234) h_p234_ = PinnedBuffer<double>(n_p234);
+  if (d_p1_.size() < n_p1) d_p1_ = DeviceBuffer<double>(n_p1);
+  if (d_p234_.size() < n_p234) d_p234_ = DeviceBuffer<double>(n_p234);
+  if (d_targets_.size() < targets.size()) d_targets_ = DeviceBuffer<Coord>(targets.size());
 
-  std::vector<int> gycoords;
-  for (const Vec4& t : targets) gycoords.insert(gycoords.end(), t.begin(), t.end());
+  std::vector<Coord> ycoords;
+  for (const Vec4& t : targets) ycoords.push_back(to_coord(t));
+  d_targets_.copy_from_host(ycoords.data(), ycoords.size());
+  // cu_2p2_pieces adds to P1 and P234
+  d_p1_.zero();
+  d_p234_.zero();
   // the kernels take {value, uncertainty}; only the value is used
-  double const xunit_pair[2] = {xunit, 0.0};
-  d_gsw_.copy_from_host(gsw.data(), 4);
-  d_xunit_.copy_from_host(xunit_pair, 2);
+  cu_2p2_pieces(d_p1_.get(), d_p234_.get(), d_fwd, /*iflavor=*/0,
+                to_coord(lattice_.proc_coords()), to_coord(gsw), n_y, d_targets_.get(),
+                Pair{xunit, 0.0}, kqed_t_, to_geom(g), to_geom(lattice_.local()));
+  check_cuda(cudaGetLastError(), "cu_2p2_pieces launch");
 
-  // compute_2p2_gpu only reads fwd_y
-  compute_2p2_gpu(const_cast<double*>(d_fwd), h_p1_.data(), h_p234_.data(),
-                  /*iflavor=*/0, d_gsw_.get(), gycoords.data(), n_y,
-                  d_xunit_.get(), kqed_t_,
-                  static_cast<unsigned>(lattice_.volume()), d_proc_coords_.get(),
-                  lattice_.cart_comm(), l[0], l[1], l[2], l[3], g[0], g[1], g[2],
-                  g[3]);
-  check_cuda(cudaGetLastError(), "compute_2p2_gpu");
-
+  // this rank's sums, P234 [target][geometry][64]: one row per target
   Pieces2p2 out;
-  out.p1.assign(h_p1_.data(), h_p1_.data() + n_p1);
-  // compute_2p2_gpu gives [geometry][target][64]; one row per target here
+  out.p1.resize(n_p1);
   out.p234.resize(n_p234);
-  for (int y = 0; y < n_y; ++y) {
-    for (int geom = 0; geom < kGeom2p2; ++geom) {
-      std::copy_n(h_p234_.data() + (static_cast<std::size_t>(geom) * n_y + y) * 64, 64,
-                  out.p234.data() + (static_cast<std::size_t>(y) * kGeom2p2 + geom) * 64);
-    }
-  }
+  d_p1_.copy_to_host(out.p1.data(), n_p1);
+  d_p234_.copy_to_host(out.p234.data(), n_p234);
+  MPI_Allreduce(MPI_IN_PLACE, out.p1.data(), static_cast<int>(n_p1), MPI_DOUBLE, MPI_SUM,
+                lattice_.cart_comm());
+  MPI_Allreduce(MPI_IN_PLACE, out.p234.data(), static_cast<int>(n_p234), MPI_DOUBLE,
+                MPI_SUM, lattice_.cart_comm());
   return out;
 }
 
@@ -178,17 +169,16 @@ std::size_t Contractor::reserve_kernel_memory(bool with_2p2) {
                         yv, kqed_t_, tiny, tiny);
     check_cuda(cudaGetLastError(), "cu_4pt_contraction launch");
     if (with_2p2) {
-      // one target, this rank alone (MPI_COMM_SELF): not collective
-      int const zeros[4] = {0, 0, 0, 0}, target[4] = {1, 1, 1, 1};
-      double const xunit_pair[2] = {1.0, 0.0};
-      DeviceBuffer<int> d_zeros(4);
-      d_zeros.copy_from_host(zeros, 4);
-      d_xunit_.copy_from_host(xunit_pair, 2);
-      PinnedBuffer<double> p1(4 * 4 * 4 * 2), p234(kGeom2p2 * 64);
-      compute_2p2_gpu(block.get(), p1.data(), p234.data(), 0, d_zeros.get(), target,
-                      1, d_xunit_.get(), kqed_t_, 16, d_zeros.get(), MPI_COMM_SELF,
-                      2, 2, 2, 2, 2, 2, 2, 2);
-      check_cuda(cudaGetLastError(), "compute_2p2_gpu");
+      // one target, no MPI: not collective
+      Coord const target{1, 1, 1, 1};
+      DeviceBuffer<Coord> d_target(1);
+      d_target.copy_from_host(&target, 1);
+      DeviceBuffer<double> p1(4 * 4 * 4 * 2), p234(kGeom2p2 * 64);
+      p1.zero();
+      p234.zero();
+      cu_2p2_pieces(p1.get(), p234.get(), block.get(), 0, zero, zero, 1, d_target.get(),
+                    Pair{1.0, 0.0}, kqed_t_, tiny, tiny);
+      check_cuda(cudaGetLastError(), "cu_2p2_pieces launch");
     }
     check_cuda(cudaDeviceSynchronize(), "contraction kernels");
   }

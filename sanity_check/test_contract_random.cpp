@@ -66,8 +66,8 @@ int main(int argc, char** argv) {
     HLBL_CHECK(rel <= 1e-10);
   }
 
-  // 2+2 pieces on 6^4: 1296 sites, not a multiple of the 256 threads of a
-  // P2/P3/P4 block, as the kernel_p21 fix needs
+  // 2+2 pieces on 6^4: 1296 sites, not a multiple of the 32 threads of a
+  // cu_2p2_pieces block
   {
     Lattice lat6(MPI_COMM_WORLD, Vec4{1, 1, 1, 1}, Vec4{6, 6, 6, 6});
     Contractor c6(lat6, kqed_t);

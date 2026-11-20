@@ -207,7 +207,7 @@ shared sources.
 
 A `2p2` line names a source and its targets. Right after the first solve of
 the source in the run (chains in input order, then windows, then solve
-order), `compute_2p2_gpu` computes from that block its P1 and, for every
+order), `cu_2p2_pieces` computes from that block its P1 and, for every
 target, P2_0, P2_1, P3, P4_0 and P4_1; then the source's pairs are
 contracted as usual. Only flavour 0 is computed, as in cvc: the two-point
 function is the same for both. A site solved again, by another chain or by a chain that wraps, gets no
@@ -235,12 +235,12 @@ and 16 do not fit in host memory.
 
 The kernel stack: the 4-point kernel uses 27,112 B of stack per thread (STACK
 of `ker_4pt_contraction` in `cuobjdump --dump-resource-usage
-build/hlbl_hypercube`; 41,280 B before `b677727`), the 2+2 kernels
-(`kernel_p20`, `p21`, `p3`, `p4`) up to 17,448 B. The CUDA driver reserves
+build/hlbl_hypercube`; 41,280 B before `b677727`), the 2+2 kernel
+`ker_2p2_pieces` 21,160 B. The CUDA driver reserves
 the largest stack of the kernels launched for every thread slot (132 SMs ×
 2048), so 2+2 adds none: 6.8 GiB per GPU (6.64 GiB measured by `--dummy-run`).
-With 2+2 the GPU also holds the buffers of `compute_2p2_gpu`: Π, 128 B per
-local site (0.13 GiB at 32⁴), and P1, P234. The Python script tabulates memory
+With 2+2 the GPU also holds the buffers of `cu_2p2_pieces`: P1 and P234
+(about 0.5 MiB at 128 targets). The Python script tabulates memory
 per node count from these numbers (`--kernel-stack-bytes`,
 `--kernel-stack-bytes-2p2`, `--solver-gb`, `--solver-host-gb`, ...).
 
@@ -250,18 +250,7 @@ per node count from these numbers (`--kernel-stack-bytes`,
 time = setup + invert-y × n_propagators + kernel_sum × 2 × n_pairs + 2p2 × n_2p2
 ```
 
-At 8 nodes on 128×64³: setup ≈ 275 s (gauge read and multigrid, once per
-job), invert-y ≈ 40.6 s (24 solves of one position), kernel_sum ≈ 2.8 s per
-flavour. K = 1 (31 propagators, 80 pairs) took about 2000 s. Each further
-window adds 15 × 40.6 s + 65 × 5.7 s ≈ 980 s, or 2.2 node-hours.
-
-2+2: about 52 s per source with 16 targets (cvc `time_2p2` at 8 nodes,
-`~/cvc_timing/cB/strong-2p2`), so a 2+2 at every new source adds about 780 s
-per window. Its P2/P3/P4 kernels run one block per target and geometry, at
-one block per SM, so on a GH200 (132 SMs) up to 33 targets should cost about
-the same as 16 (not measured). `--t-2p2` of the Python script takes this time.
-With P4, `compute_2p2_gpu` takes 4.6 s for 16 targets at 262,144 local sites
-on one GH200 (cvc's `cu_2p2_pieces`: 2.2 s).
+Refer to actual measurements of invert time kernel sum time and 2p2 time!
 
 ### Output
 
@@ -347,9 +336,9 @@ production job.
   (31 propagators, 80 pairs), `cache = host`. 34 minutes, cache peak 16 as
   predicted, QUDA plaquette matches the file (0.554279822834), and a rerun
   gives the same kernel sums.
-- 2+2 pieces: `compute_2p2_gpu` at the first solve of each `2p2` source,
-  tested on random fields; it agrees with cvc's `ker_2p2_pieces` (vendored,
-  `kernels/VENDORED.md`) to 10⁻¹⁴ on 1 and 4 ranks.
+- 2+2 pieces: `cu_2p2_pieces` at the first solve of each `2p2` source,
+  tested on random fields; it agrees with `compute_2p2_gpu` (vendored,
+  `kernels/VENDORED.md`) to 10⁻¹⁴ on 1 rank.
 - **Not done:** comparing the kernel sums and the 2+2 pieces with cvc's
   `hlbl_mII_invert_contract`. Correctness against production is still open.
 

@@ -679,12 +679,58 @@ void ker_2p2_pieces(
         yv_mi_xv[3] * xunit.a
       };
 
+      /* zerohalf copies of P2_0, P2_1, P3, as kernel_p20_zh, kernel_p21_zh,
+       * kernel_p3_zh (hlbl_kernels/kernels.cu): coord_map_zerohalf for every
+       * QED kernel argument, x - y unwrapped as zh(x) + zh(-y) */
+      int const yv_zh[4] = {
+        coord_map_zerohalf(y[0], global_geom_arr[0]),
+        coord_map_zerohalf(y[1], global_geom_arr[1]),
+        coord_map_zerohalf(y[2], global_geom_arr[2]),
+        coord_map_zerohalf(y[3], global_geom_arr[3])
+      };
+      int const xv_zh[4] = {
+        coord_map_zerohalf(z[0], global_geom_arr[0]),
+        coord_map_zerohalf(z[1], global_geom_arr[1]),
+        coord_map_zerohalf(z[2], global_geom_arr[2]),
+        coord_map_zerohalf(z[3], global_geom_arr[3])
+      };
+      /* gsw - gsy mapped on its own, as ym_minus */
+      int const yv_minus_zh[4] = {
+        coord_map_zerohalf(coord_mod_pos(gsw_arr[0] - gsy_arr[0], global_geom_arr[0]), global_geom_arr[0]),
+        coord_map_zerohalf(coord_mod_pos(gsw_arr[1] - gsy_arr[1], global_geom_arr[1]), global_geom_arr[1]),
+        coord_map_zerohalf(coord_mod_pos(gsw_arr[2] - gsy_arr[2], global_geom_arr[2]), global_geom_arr[2]),
+        coord_map_zerohalf(coord_mod_pos(gsw_arr[3] - gsy_arr[3], global_geom_arr[3]), global_geom_arr[3])
+      };
+      double const ym_zh[4] = {
+        yv_zh[0] * xunit.a,
+        yv_zh[1] * xunit.a,
+        yv_zh[2] * xunit.a,
+        yv_zh[3] * xunit.a };
+      double const xm_zh[4] = {
+        xv_zh[0] * xunit.a,
+        xv_zh[1] * xunit.a,
+        xv_zh[2] * xunit.a,
+        xv_zh[3] * xunit.a };
+      double const ym_minus_zh[4] = {
+        yv_minus_zh[0] * xunit.a,
+        yv_minus_zh[1] * xunit.a,
+        yv_minus_zh[2] * xunit.a,
+        yv_minus_zh[3] * xunit.a };
+      double const xm_mi_ym_zh[4] = {
+        (xv_zh[0] + yv_minus_zh[0]) * xunit.a,
+        (xv_zh[1] + yv_minus_zh[1]) * xunit.a,
+        (xv_zh[2] + yv_minus_zh[2]) * xunit.a,
+        (xv_zh[3] + yv_minus_zh[3]) * xunit.a };
+
       for (int ikernel = 0; ikernel < CUDA_N_QED_KERNEL; ++ikernel) {
         double local_P2_0[4][4][4] = { 0 };
         double local_P2_1[4][4][4] = { 0 };
         double local_P3[4][4][4] = { 0 };
         double local_P4_0[4][4][4] = { 0 };
         double local_P4_1[4][4][4] = { 0 };
+        double local_P2_0_zh[4][4][4] = { 0 };
+        double local_P2_1_zh[4][4][4] = { 0 };
+        double local_P3_zh[4][4][4] = { 0 };
         KQED_LX( ikernel, xm, ym, kqed_t, kerv );
         for( int k = 0; k < 6; k++ ) {
           int const rho = idx_comb.comb[k][0];
@@ -742,24 +788,73 @@ void ker_2p2_pieces(
             // local_P4_1[sigma][rho][nu] = -local_P4_0[rho][sigma][nu] * (yv[sigma]-xv[sigma]);
           }
         }
+        /* zerohalf: P2_0, P2_1, P3 as above, with the _zh arguments */
+        KQED_LX( ikernel, xm_zh, ym_zh, kqed_t, kerv );
+        for( int k = 0; k < 6; k++ ) {
+          int const rho = idx_comb.comb[k][0];
+          int const sigma = idx_comb.comb[k][1];
+          for ( int nu = 0; nu < 4; nu++ ) {
+            local_P2_0_zh[rho][sigma][nu] = 0.0;
+            for ( int mu = 0; mu < 4; mu++ ) {
+              for ( int lambda = 0; lambda < 4; lambda++ ) {
+                local_P2_0_zh[rho][sigma][nu] += kerv[k][mu][nu][lambda] * pimn[mu][lambda];
+              }
+            }
+          }
+        }
+        KQED_LX( ikernel, ym_zh, xm_zh, kqed_t, kerv );
+        for( int k = 0; k < 6; k++ ) {
+          int const rho = idx_comb.comb[k][0];
+          int const sigma = idx_comb.comb[k][1];
+          for ( int nu = 0; nu < 4; nu++ ) {
+            local_P2_1_zh[rho][sigma][nu] = 0.0;
+            for ( int mu = 0; mu < 4; mu++ ) {
+              for ( int lambda = 0; lambda < 4; lambda++ ) {
+                local_P2_1_zh[rho][sigma][nu] += kerv[k][nu][mu][lambda] * pimn[mu][lambda];
+              }
+            }
+          }
+        }
+        KQED_LX( ikernel, xm_mi_ym_zh, ym_minus_zh, kqed_t, kerv );
+        for( int k = 0; k < 6; k++ ) {
+          int const rho = idx_comb.comb[k][0];
+          int const sigma = idx_comb.comb[k][1];
+          for ( int nu = 0; nu < 4; nu++ ) {
+            local_P3_zh[rho][sigma][nu] = 0.0;
+            for ( int mu = 0; mu < 4; mu++ ) {
+              for ( int lambda = 0; lambda < 4; lambda++ ) {
+                local_P3_zh[rho][sigma][nu] += kerv[k][mu][lambda][nu] * pimn[mu][lambda];
+              }
+            }
+          }
+        }
         // reduce (TODO faster reduce algo?)
+        // P23x[y][kernel][5 + 3][4][4][4]: the five minimum-image geometries,
+        // then P2_0, P2_1, P3 zerohalf, as in P234 of compute_2p2_gpu
+        #if CUDA_N_QED_GEOM != 5 || CUDA_N_QED_GEOM_ZH != 3
+        #error "Number of QED kernel geometries does not match implementation"
+        #endif
+        int const n_geom = CUDA_N_QED_GEOM + CUDA_N_QED_GEOM_ZH;
         int ind;
         for (int rho = 0; rho < 4; ++rho) {
           for (int sigma = 0; sigma < 4; ++sigma) {
             for (int nu = 0; nu < 4; ++nu) {
-              #if CUDA_N_QED_GEOM != 5
-              #error "Number of QED kernel geometries does not match implementation"
-              #endif
-              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*CUDA_N_QED_GEOM + 0)*4 + rho)*4 + sigma)*4 + nu;
+              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*n_geom + 0)*4 + rho)*4 + sigma)*4 + nu;
               atomicAdd_system(&P23x[ind], local_P2_0[rho][sigma][nu]);
-              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*CUDA_N_QED_GEOM + 1)*4 + rho)*4 + sigma)*4 + nu;
+              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*n_geom + 1)*4 + rho)*4 + sigma)*4 + nu;
               atomicAdd_system(&P23x[ind], local_P2_1[rho][sigma][nu]);
-              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*CUDA_N_QED_GEOM + 2)*4 + rho)*4 + sigma)*4 + nu;
+              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*n_geom + 2)*4 + rho)*4 + sigma)*4 + nu;
               atomicAdd_system(&P23x[ind], local_P3[rho][sigma][nu]);
-              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*CUDA_N_QED_GEOM + 3)*4 + rho)*4 + sigma)*4 + nu;
+              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*n_geom + 3)*4 + rho)*4 + sigma)*4 + nu;
               atomicAdd_system(&P23x[ind], local_P4_0[rho][sigma][nu]);
-              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*CUDA_N_QED_GEOM + 4)*4 + rho)*4 + sigma)*4 + nu;
+              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*n_geom + 4)*4 + rho)*4 + sigma)*4 + nu;
               atomicAdd_system(&P23x[ind], local_P4_1[rho][sigma][nu]);
+              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*n_geom + 5)*4 + rho)*4 + sigma)*4 + nu;
+              atomicAdd_system(&P23x[ind], local_P2_0_zh[rho][sigma][nu]);
+              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*n_geom + 6)*4 + rho)*4 + sigma)*4 + nu;
+              atomicAdd_system(&P23x[ind], local_P2_1_zh[rho][sigma][nu]);
+              ind = ((((yi*CUDA_N_QED_KERNEL + ikernel)*n_geom + 7)*4 + rho)*4 + sigma)*4 + nu;
+              atomicAdd_system(&P23x[ind], local_P3_zh[rho][sigma][nu]);
             }
           }
         }

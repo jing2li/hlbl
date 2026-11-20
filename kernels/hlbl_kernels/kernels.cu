@@ -606,9 +606,9 @@ unsigned const T_global, unsigned const LX_global, unsigned const LY_global, uns
             // wrapped (minimum image)
             int const x_mi_y[4] = {
                 (x[0] - y[0] + static_cast<int>(T_global)) % static_cast<int>(T_global), 
-                (x[1] - y[1] + static_cast<int>(LX_global)) % LX_global, 
-                (x[2] - y[2] + static_cast<int>(LY_global)) % LY_global, 
-                (x[3] - y[3] + static_cast<int>(LZ_global)) % LZ_global};
+                (x[1] - y[1] + static_cast<int>(LX_global)) % static_cast<int>(LX_global), 
+                (x[2] - y[2] + static_cast<int>(LY_global)) % static_cast<int>(LY_global), 
+                (x[3] - y[3] + static_cast<int>(LZ_global)) % static_cast<int>(LZ_global)};
             int xmyv[4];
             site_map(xmyv, x_mi_y, T_global, LX_global, LY_global, LZ_global);
             double xm_mi_ym[4] = {xmyv[0] * xunit[0], xmyv[1] * xunit[0], xmyv[2] * xunit[0], xmyv[3] * xunit[0]};
@@ -705,9 +705,9 @@ unsigned const T_global, unsigned const LX_global, unsigned const LY_global, uns
             // wrapped (minimum image)
             int const y_mi_x[4] = {
                 (-x[0] + y[0] + static_cast<int>(T_global)) % static_cast<int>(T_global), 
-                (-x[1] + y[1] + static_cast<int>(LX_global)) % LX_global, 
-                (-x[2] + y[2] + static_cast<int>(LY_global)) % LY_global, 
-                (-x[3] + y[3] + static_cast<int>(LZ_global)) % LZ_global};
+                (-x[1] + y[1] + static_cast<int>(LX_global)) % static_cast<int>(LX_global), 
+                (-x[2] + y[2] + static_cast<int>(LY_global)) % static_cast<int>(LY_global), 
+                (-x[3] + y[3] + static_cast<int>(LZ_global)) % static_cast<int>(LZ_global)};
             int ymxv[4];
             site_map(ymxv, y_mi_x, T_global, LX_global, LY_global, LZ_global);
             double ym_mi_xm[4] = {ymxv[0] * xunit[0], ymxv[1] * xunit[0], ymxv[2] * xunit[0], ymxv[3] * xunit[0]};
@@ -993,7 +993,7 @@ unsigned const T_global, unsigned const LX_global, unsigned const LY_global, uns
             int xv[4];
             site_map_zerohalf(xv, x, T_global, LX_global, LY_global, LZ_global);
             int const xmyv[4] = {xv[0] + yv_minus[0], xv[1] + yv_minus[1], xv[2] + yv_minus[2], xv[3] + yv_minus[3]};
-            double xm_mi_ym[4] = {xmyv[0] * xunit[0], xmyv[1] * xunit[0], xmyv[2] * xunit[0], xmyv[3] * xunit[0]};
+            double const xm_mi_ym[4] = {xmyv[0] * xunit[0], xmyv[1] * xunit[0], xmyv[2] * xunit[0], xmyv[3] * xunit[0]};
 
 
             double kerv3[6][4][4][4] KQED_ALIGN ;
@@ -1095,20 +1095,21 @@ __host__ void compute_2p2_gpu(double *fwd_y, double *P1, double *P234, int iflav
     // --- Stream x4: P2_0, P2_1, P3, P4 (P4_0 and P4_1) ---
     dim3 gridP234(88, kernel_n);
     dim3 blockP234(256);
-    kernel_p20<<<gridP234, blockP234, 0, stream_p20>>>(Pi_d, P234_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
-    kernel_p21<<<gridP234, blockP234, 0, stream_p21>>>(Pi_d, P234_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
     kernel_p3<<<gridP234, blockP234, 0, stream_p3>>>(Pi_d,P234_d,n_y,gsw ,gycoords_d,xunit,kqed_t,VOLUME,g_proc_coords,T,LX ,LY,LZ,T_global,LX_global ,LY_global,LZ_global);
-    kernel_p4<<<gridP234, blockP234, 0, stream_p4>>>(Pi_d,P234_d,n_y,gsw ,gycoords_d,xunit,kqed_t,VOLUME,g_proc_coords,T,LX ,LY,LZ,T_global,LX_global ,LY_global,LZ_global);
+    kernel_p4<<<gridP234, blockP234, 0, stream_p4>>>(Pi_d,P234_d,n_y,gsw ,gycoords_d,xunit,kqed_t,VOLUME,g_proc_coords,T,LX ,LY,LZ,T_global,LX_global ,LY_global,LZ_global);        
+    
+    // --- Stream x3: P2_0, P2_1, P3 zerohalf, after the five ---
+    double *const P234_zh_d = P234_d + size_p234;
+    kernel_p3_zh<<<gridP234, blockP234, 0, stream_zh[2]>>>(Pi_d, P234_zh_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+    kernel_p20_zh<<<gridP234, blockP234, 0, stream_zh[0]>>>(Pi_d, P234_zh_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+    kernel_p21_zh<<<gridP234, blockP234, 0, stream_zh[1]>>>(Pi_d, P234_zh_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);    
+    kernel_p21<<<gridP234, blockP234, 0, stream_p21>>>(Pi_d, P234_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+    kernel_p20<<<gridP234, blockP234, 0, stream_p20>>>(Pi_d, P234_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
+
     cudaMemcpyAsync(P234, P234_d, size_p234/kernel_n_geom * sizeof(double), cudaMemcpyDeviceToHost, stream_p20);
     cudaMemcpyAsync(P234 + size_p234/kernel_n_geom, P234_d + size_p234/kernel_n_geom, size_p234/kernel_n_geom * sizeof(double), cudaMemcpyDeviceToHost, stream_p21);
     cudaMemcpyAsync(P234 + 2*size_p234/kernel_n_geom, P234_d + 2*size_p234/kernel_n_geom, size_p234/kernel_n_geom * sizeof(double), cudaMemcpyDeviceToHost, stream_p3);    
     cudaMemcpyAsync(P234 + 3*size_p234/kernel_n_geom, P234_d + 3*size_p234/kernel_n_geom, 2*size_p234/kernel_n_geom * sizeof(double), cudaMemcpyDeviceToHost, stream_p4);    
-
-    // --- Stream x3: P2_0, P2_1, P3 zerohalf, after the five ---
-    double *const P234_zh_d = P234_d + size_p234;
-    kernel_p20_zh<<<gridP234, blockP234, 0, stream_zh[0]>>>(Pi_d, P234_zh_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
-    kernel_p21_zh<<<gridP234, blockP234, 0, stream_zh[1]>>>(Pi_d, P234_zh_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
-    kernel_p3_zh<<<gridP234, blockP234, 0, stream_zh[2]>>>(Pi_d, P234_zh_d, n_y, gsw, gycoords_d, xunit, kqed_t, VOLUME, g_proc_coords, T, LX, LY, LZ, T_global, LX_global, LY_global, LZ_global);
     for (int b = 0; b < kernel_n_geom_zh; b++) {
         cudaMemcpyAsync(P234 + size_p234 + b * size_zh_block, P234_zh_d + b * size_zh_block,
                         size_zh_block * sizeof(double), cudaMemcpyDeviceToHost, stream_zh[b]);

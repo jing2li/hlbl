@@ -57,7 +57,7 @@ std::vector<PairResult> run_chains(const Lattice& lattice,
 //   device cache: peak positions on the GPU.
 //   host cache:   peak positions in pinned host memory, plus 3 blocks on the
 //                 GPU (solve target, two staging slots).
-// With 2+2, the device also holds the work buffers of compute_2p2_gpu.
+// With 2+2, the device also holds the work buffers of cu_2p2_pieces.
 struct MemoryEstimate {
   std::size_t bytes_per_position = 0;  // one position, on this rank
   int peak_positions = 0;

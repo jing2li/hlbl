@@ -28,11 +28,10 @@ bugs here deliberately and record each change below.
 ## What is used
 
 - `cuda_lattice.cu`: `cu_dzu_dzsu` and `cu_4pt_contraction`, the connected
-  kernel sum.
-- `hlbl_kernels/kernels.cu`: the 2+2 pieces (`compute_2p2_gpu`), called by
+  kernel sum; `cu_2p2_pieces`, the 2+2 pieces, called by
   `Contractor::pieces_2p2` for the sources of the input file's `2p2` lines.
-  `cu_2p2_pieces` of `cuda_lattice.cu` is not called; it is the reference
-  `compute_2p2_gpu` is checked against.
+- `hlbl_kernels/kernels.cu`: `compute_2p2_gpu` is not called; it is the
+  reference `cu_2p2_pieces` is checked against.
 - `kqed_cuda_glue.cu`: the external definition of `__checkCudaErrors`, which
   `libKQED_cuda.a` references but does not define.
 
@@ -54,13 +53,15 @@ Both kernel files evaluate a single QED kernel, LΛ with Λ = 0.4
 | 2026-11-19 | (uncommitted) | `hlbl_kernels/kernels.cuh` | Declarations of the removed functions dropped; P234. |
 | 2026-11-19 | (uncommitted) | `cuda_lattice.h` | diff_zerohalf: `CUDA_N_QED_GEOM_ZH` 3, the zerohalf copies of P2_0, P2_1, P3. |
 | 2026-11-19 | (uncommitted) | `hlbl_kernels/kernels.cu` | diff_zerohalf (first 2026-11-13, rebased onto P4): P2_0, P2_1, P3 computed a second time, to compare with the earlier cvc runs. `site_map_zerohalf` restored; `kernel_p20_zh`, `kernel_p21_zh`, `kernel_p3_zh` are `kernel_p20`/`p21`/`p3` with `site_map_zerohalf` for every QED kernel argument (`p20_zh`, `p21_zh` as cvc at `90da285`, `p21_zh` with the reduction fix above; `p3_zh` takes x − y unwrapped, zh(x) + zh(−y), where cvc wrapped x − y before zerohalf). `compute_2p2_gpu` fills P234 as `[5 + 3][y][kernel][64]`: the five minimum-image geometries as before, then the three zerohalf ones, one stream, copy and `MPI_Iallreduce` each; `kernel_n_geom_zh` 3, in the `#error` check. No zerohalf P4: the cvc runs had none. The caller's P234 is 8 geometries long. |
+| 2026-11-20 | (uncommitted) | `cuda_lattice.cu` | diff_zerohalf: `ker_2p2_pieces` computes P2_0, P2_1, P3 zerohalf as `kernel_p20_zh`, `kernel_p21_zh`, `kernel_p3_zh`: `coord_map_zerohalf` for every QED kernel argument, P3 with x − y unwrapped, zh(x) + zh(−y). P23x is `[y][kernel][5 + 3][64]`, the zerohalf geometries after the five, so `cu_2p2_pieces` checks all eight of `compute_2p2_gpu`; the caller's P23x is 8 geometries long. 7 QED kernel evaluations per site and target (4 before). The `#error` check includes `CUDA_N_QED_GEOM_ZH`. |
+| 2026-11-20 | (uncommitted) | `cuda_lattice.h` | Comment on the `cu_2p2_pieces` output layout. |
 
 sha256 now:
 
 | file | sha256 |
 |---|---|
-| `cuda_lattice.cu` | `1d90760f70441b2250a135f1f1847e01cb8231cd2cdf2ef1da3d5b4c391d769f` |
-| `cuda_lattice.h` | `6cb9bb126c2f97645b1b80ac4803430060c48fcd110f1af7b5876beb86a11547` |
+| `cuda_lattice.cu` | `6de7775752e5427b7d45e4f2861f858a3ce227180859e015068f28ef627bd19a` |
+| `cuda_lattice.h` | `752b18a9abc8e72bf0c56c6f15064762df97cc5d6341076ad134499fe3fbb7c0` |
 | `hlbl_kernels/kernels.cu` | `ff6462a581c169b0d1dd71a84caaa3f550d5d59aadd3e59c91e369844219bd7c` |
 | `hlbl_kernels/kernels.cuh` | `94c3a430db23a6bdedf291ff8616165ddc4e169304a06be51292772168ca98db` |
 

@@ -2,13 +2,13 @@
 
 // The connected kernel sum of one pair of point sources, using the GPU kernels
 // of kernels/cuda_lattice.h (from cvc's hlbl_mII_invert_contract), and the
-// 2+2 pieces of one source (kernels/hlbl_kernels, compute_2p2_gpu).
+// 2+2 pieces of one source (cu_2p2_pieces).
 
 #include <array>
 #include <cstddef>
 #include <vector>
 
-#include "cuda_lattice.h"  // vendored: Coord, Geom, Pair, cu_dzu_dzsu, cu_4pt_contraction
+#include "cuda_lattice.h"  // vendored: Coord, Geom, Pair and the cu_* kernels
 #include "hlbl/lattice.hpp"
 #include "hlbl/mdarray.hpp"
 #include "hlbl/vec4.hpp"
@@ -59,7 +59,7 @@ class Contractor {
   // The 4-point kernel needs ~27 kB of stack per thread (the QED kernel), and
   // the CUDA driver reserves it for every thread slot at the first launch:
   // ~6.8 GiB on a GH200. This launches the connected kernels (and with
-  // with_2p2 the 2+2 kernels, whose stack is smaller now) once on a 2^4
+  // with_2p2 the 2+2 kernel, whose stack is smaller) once on a 2^4
   // lattice, so the reservation happens before free memory is measured.
   // Returns the device memory taken on this rank.
   std::size_t reserve_kernel_memory(bool with_2p2 = false);
@@ -74,14 +74,10 @@ class Contractor {
   DeviceBuffer<double> d_g_dzsu_{kGDzsuLen};
   DeviceBuffer<double> d_kernel_sum_{kKernelN};
 
-  // compute_2p2_gpu reads gsw, xunit and the process coordinates in device
-  // code, so they live on the device
-  DeviceBuffer<int> d_gsw_{4};
-  DeviceBuffer<int> d_proc_coords_{4};
-  DeviceBuffer<double> d_xunit_{2};
-  // it copies P1 and P234 to the host asynchronously and sums them there in
-  // place, so they are pinned; grown on first use
-  PinnedBuffer<double> h_p1_, h_p234_;
+  // cu_2p2_pieces sums P1 and P234 on the device, from the targets there;
+  // grown on first use
+  DeviceBuffer<double> d_p1_, d_p234_;
+  DeviceBuffer<Coord> d_targets_;
 
   // The z-sum of the two propagators over all ranks, with gammas applied.
   // Fills d_g_dzu_ and d_g_dzsu_.

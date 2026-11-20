@@ -1,5 +1,15 @@
 # Timing hint
-2+2 pieces, seconds per call on one GH200, median, targets 16 / 64 / 128 (2026-11-19):
-- 65,536 local sites: `compute_2p2_gpu` 1.04 / 2.12 / 4.23, `cu_2p2_pieces` 0.54 / 2.31 / 4.59
-- 262,144 local sites: `compute_2p2_gpu` 4.63 / 9.49 / 18.98, `cu_2p2_pieces` 2.24 / 9.48 / 19.09
-- `compute_2p2_gpu` runs one block per target and geometry, one block per SM: below 33 targets part of the GPU is idle.
+2+2 pieces, 8 geometries, seconds per call on one GH200, 262,144 local sites
+(32x16x16x32 of 128x64x64x64), 2026-11-20:
+
+| targets | `cu_2p2_pieces` | `compute_2p2_gpu` | difference |
+|---|---|---|---|
+| 16 | 5.02 | 6.33 | cu 21% faster |
+| 44 | 13.96 | 14.40 | cu 3% faster |
+| 64 | 20.39 | 20.16 | compute 1% faster |
+| 88 | 27.99 | 26.62 | compute 5% faster |
+| 128 | 40.95 | 38.69 | compute 6% faster |
+
+- `cu_2p2_pieces` (used): median of 5 calls; 0.32 s per target, linear.
+- `compute_2p2_gpu`: 88 x 256 threads, `p3`, `p4`, `p3_zh` launched first; one call,
+  2-3% run-to-run noise. Never faster than one pass of its slowest kernel (~6.3 s).
